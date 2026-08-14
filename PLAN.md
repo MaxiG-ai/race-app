@@ -438,6 +438,12 @@ meter and cadence sensor pair to it. The watch remains the only record of the sw
 run. So a race's best data is **assembled across devices, per segment** — which the
 original one-recording-per-segment model could not express (see §2 `RecordedActivity`).
 
+**Assembly is per segment, never per metric.** One recording is primary for a leg and
+every displayed number for that leg comes from it. Cherry-picking fields across devices —
+the Edge's power with the watch's distance — would mean 19 634 m and 19 992 m both
+claiming to be the bike distance, and every chart series needing a device footnote. The
+non-primary recording is retained and switchable, not merged.
+
 The Edge file also carries two things the watch files don't:
 `timestamp_correlation`, giving the UTC↔local offset directly (+2 here), which removes the
 timezone guesswork for Garmin files; and a `sport` message named `TRIATHLON`, the activity
@@ -846,8 +852,8 @@ Carried forward from both source plans, plus seams that surfaced while merging t
 - **Opening to other users** — registration, password reset, admin surface and quotas
   are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
 - **Gear component-level tracking** — chains, cassettes and tyres as sub-items of a bike,
-  each with their own mileage and service intervals. The `Gear` shape allows it; v1 tracks
-  whole items only.
+  each with their own mileage and service intervals. Decided against for v1: it needs a
+  parent/child gear tree and swap history. The `Gear` shape accommodates it later.
 - **Garmin `time_in_zone` and cycling dynamics** — L/R balance, torque effectiveness,
   pedal smoothness and HR-zone distributions are all parsed into `raw_data` but not
   modelled or surfaced. Cheap to promote later if they turn out to be interesting.
