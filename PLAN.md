@@ -24,7 +24,7 @@ polished. This is a personal tool, not a showcase.
 | Hosting | Deployed to a VPS via docker compose |
 | Auth | Real login with user accounts |
 | Tenancy | Multi-tenant by design, single-tenant in operation — you first, others later |
-| FIT upload | Auto-creates a draft race |
+| FIT upload | Multisport files auto-create a draft race; single-sport files stage for manual grouping |
 | Carbs | Per-segment (bike / run) |
 | v1 scope | M0–M7; Strava deferred |
 
@@ -68,19 +68,20 @@ race-app/
       routers/           # auth, races, imports, stats, weather
       auth/              # password hashing, JWT issue/verify, current_user dependency
       services/
-        fit_import.py    # fitdecode parsing → normalized dicts
+        fit_import.py    # fitdecode parsing → normalized dicts (vendor-agnostic)
+        grouping.py      # group single-sport uploads into a race (§3 Grouping)
         weather.py       # Open-Meteo historical enrichment
         aggregates.py    # summary stats queries
         geo.py           # polyline simplification / downsampling
       migrations/        # Alembic
     tests/
-      fixtures/          # two real multisport FIT exports (see §3)
+      fixtures/          # three real multisport FIT exports: 2x Apple, 1x Garmin (§3)
     pyproject.toml
   frontend/
     src/
       api/               # typed fetch functions + TanStack Query hooks
       components/        # RaceCard, SegmentBar, StatStrip, TimelineSpine, ...
-      pages/             # Timeline.tsx, RaceDetail.tsx, RaceEdit.tsx, Import.tsx
+      pages/             # Timeline.tsx, RaceDetail.tsx, RaceEdit.tsx, Import.tsx, Login.tsx
       types/             # generated from FastAPI OpenAPI schema
       lib/               # formatting helpers (pace, time, duration)
     package.json
@@ -134,6 +135,30 @@ Swim is omitted deliberately — nobody fuels mid-swim. Total carbs is derived o
 stored. If fueling ever needs finer structure (per-lap, or gel-by-gel), it graduates to
 its own `RaceFueling` table; two columns don't justify one now.
 
+### `Upload`
+Staging row for every file or Strava activity, created *before* it belongs to a race.
+This is what makes manual grouping possible.
+```
+id (PK)
+user_id (FK, indexed)  owner — uploads exist before any race, so they carry their own
+                       owner rather than inheriting one through race_id
+source                 enum: fit_upload, strava
+filename               nullable (null for Strava-sourced)
+stored_path            nullable — original file retained on disk (§8)
+content_hash           sha256 of the file — rejects re-uploading the same file twice
+external_id            nullable, Strava activity id
+status                 enum: parsed, grouped, failed
+kind                   enum: multisport, single_sport — 5-session file vs. one leg
+detected_sport         enum: swim, bike, run, other — null for multisport
+detected_start_time / detected_end_time
+detected_distance_m
+summary                jsonb — parse preview for the grouping UI, so the tray renders
+                       without re-reading files
+error                  nullable, parse failure message
+race_id                FK nullable — set once grouped
+uploaded_at
+```
+
 ### `OfficialResult` (1:1 with Race, manually entered)
 ```
 id (PK)
@@ -157,15 +182,18 @@ segment           enum: swim, t1, bike, t2, run
 source            enum: fit_upload, strava
 external_id       nullable (Strava activity id)
 start_time
-total_time
+elapsed_time      wall-clock, session total_elapsed_time
+moving_time       nullable, session total_timer_time — differs from elapsed on Garmin
 distance_m        nullable (transitions are short but real: 20 m-550 m observed)
 elevation_gain_m  nullable (session total_ascent; absent on swim/transitions)
 avg_hr / max_hr   nullable
-avg_power         nullable — running power in practice, not bike (see §3.3)
-normalized_power  nullable — never populated by this device; kept for Strava
-avg_pace / avg_speed           nullable (swim has no avg_speed; derive from dist/time)
-rpe_estimated     nullable, from FIT dev field
-avg_mets          nullable, from FIT dev field
+avg_power         nullable — device-dependent, NOT sport-dependent (see §3 Traps 2)
+normalized_power  nullable — Garmin bike only
+avg_pace / avg_speed           nullable — derive from distance/time, not the FIT field
+avg_cadence       nullable — reliable on Garmin, sparse-to-absent on Apple
+avg_temp_c        nullable — Garmin device temperature; NOT air temp, see §3 Traps 8
+rpe_estimated     nullable, Apple developer field only
+avg_mets          nullable, Apple developer field only
 bounds_*          nullable — session bounding box (n/s/e/w lat/lng) for map fitting
 gps_track         jsonb — array of {lat, lng, elevation, timestamp}
 raw_data          jsonb — full parsed FIT/Strava payload, safety net for unmapped fields
@@ -175,7 +203,7 @@ imported_at
 `gps_track` stays JSONB for now. Migrate to a PostGIS `geometry` column only if spatial
 queries ("races whose bike course passes near X") become a real need.
 
-### `LapSplit` (many:1 with RecordedActivity — auto-laps: 1 km run, 5 km bike, 1 per swim)
+### `LapSplit` (many:1 with RecordedActivity — auto-laps: 1 km run, 5 km bike; swim varies by vendor)
 ```
 id (PK)
 recorded_activity_id (FK)
@@ -186,11 +214,11 @@ start_time
 total_time
 distance_m        nullable
 avg_hr / max_hr   nullable
-avg_power         nullable — running power in practice, not bike (see §3.3)
-normalized_power  nullable — never populated by this device; kept for Strava
-avg_pace / avg_speed          nullable
+avg_power         nullable — device-dependent, NOT sport-dependent (see §3 Traps 2)
+normalized_power  nullable — Garmin bike only
+avg_pace / avg_speed          nullable — derive from distance/time
 elevation_gain_m  nullable
-cadence_avg       nullable — unreliable; absent entirely in one of two sample files
+cadence_avg       nullable — reliable on Garmin, sparse-to-absent on Apple
 is_partial        bool — true when the lap is a trailing remainder (see §3.2)
 raw_data          jsonb
 ```
@@ -215,80 +243,95 @@ raw_data          jsonb
 
 ### FIT files (primary)
 
-Verified against two real Apple Watch multisport exports, both in
-`backend/tests/fixtures/`:
+Verified against three real multisport exports in `backend/tests/fixtures/` — two Apple
+Watch, one Garmin. The vendor split matters more than any single file's quirks.
 
-| | `multisport_2026-07-11.fit` | `multisport_2026-08-09.fit` |
-|---|---|---|
-| Sessions | 5 | 5 |
-| Records | 9 829 | 9 413 |
-| Laps | 19 | 21 |
-| Swim | 1 572 m / 28:59 | 1 548 m / 31:12 |
-| T1 | 552 m / 3:36 | 105 m / 2:27 |
-| Bike | 33 746 m / 1:13:08, +558 m | 40 570 m / 1:09:39, +22 m |
-| T2 | 218 m / 2:00 | 20 m / 0:08 |
-| Run | 9 172 m / 56:03, +166 m | 9 933 m / 53:24, +48 m |
+| | Apple `2026-07-11` | Apple `2026-08-09` | Garmin `2024-08-03` |
+|---|---|---|---|
+| Records | 9 829 | 9 413 | 6 389 |
+| Laps | 19 | 21 | 25 |
+| Swim | 1 572 m / 28:59 | 1 548 m / 31:12 | 1 645 m / 20:42 |
+| T1 | 552 m / 3:36 | 105 m / 2:27 | 273 m / 3:33 |
+| Bike | 33 746 m / 1:13:08, +558 m | 40 570 m / 1:09:39, +22 m | 40 868 m / 1:12:35, +327 m |
+| T2 | 218 m / 2:00 | 20 m / 0:08 | 27 m / 1:10 |
+| Run | 9 172 m / 56:03, +166 m | 9 933 m / 53:24, +48 m | 9 239 m / 46:43, +59 m |
 
-Confirmed:
+### What holds across both vendors
 
-- **One FIT file = one race**, containing 5 `session` messages in order: swim
-  (open_water), transition (T1), cycling, transition (T2), running. Import logic must
-  split the `record` stream (~9–10 k per-second points) by session `start_time` +
-  `total_elapsed_time` boundaries — *not* expect 5 separate file uploads.
-- **`record`** messages give the full per-second stream — source for `gps_track`.
-  GPS coverage is 100 %, including the open-water swim. Bucketing records by session
-  window leaves **zero** unassigned points in both files.
-- **`session`** carries `total_ascent` and an `nec`/`swc` bounding box — enough to fit the
+- **One multisport FIT = one race**, containing 5 `session` messages in order: swim
+  (open_water), transition (T1), cycling, transition (T2), running. Import splits the
+  `record` stream by session boundaries — it does *not* expect 5 separate uploads.
+- **`record`** messages carry the position stream (99.8–100 % GPS coverage, open-water
+  swim included) — source for `gps_track`.
+- **`session`** carries `total_ascent` and an `nec`/`swc` bounding box, enough to fit the
   map viewport without touching the point stream.
-- **No nutrition/carbs data anywhere** (all frame types checked, developer fields
-  included). Carbs stays manual entry.
-- **Developer fields declared**: `SESSION UUID`, `SESSION INDOOR`,
-  `SESSION ACTIVITY TYPE`, `WORKOUT RPE ESTIMATED`, `AVG METs`,
-  `SESSION WEATHER HUMIDITY`. No temperature field anywhere.
+- **Runs auto-lap at 1 km, bikes at 5 km.** Consistent across all three files.
+- **No nutrition or carbs data anywhere**, on either vendor. Carbs stays manual entry.
+- **`avg_speed` is unreliable on laps** — absent on every Garmin lap and on Apple swim
+  laps. Derive pace from distance ÷ time rather than reading the field.
+- **Timestamps are UTC.** Apple filenames encode *local* time (`...131906` against a
+  `time_created` of 11:19:06 UTC — CEST, +2). `Race.date` must be the local race date
+  derived from the start location's timezone, or an early start lands on the wrong day.
 
-Corrections to earlier assumptions — each of these is a place naive import logic goes
-wrong:
+### Where the vendors diverge
 
-1. **Lap length is not ~1 km across the board.** Runs auto-lap at 1 km, **bikes at 5 km**,
-   and the **whole swim is a single lap**. So a swim has exactly one "split" — the pacing
-   chart must not render a one-point line for it — and bike splits are coarse (6–8 per race).
-2. **Bike laps silently drop the trailing partial lap.** 6 × 5 000 m = 30 000 m against a
-   33 746 m session; 8 × 5 000 m = 40 000 m against 40 570 m. Run laps *do* include their
-   partial final lap and reconcile exactly. **Session totals are authoritative; laps are
-   for pacing shape only.** Summing laps under-reports the bike by up to 3.7 km.
-3. **Power is on the run, not the bike.** Both files: running `avg_power` 295 / 307 W
-   (Apple Watch running power), bike `avg_power` `None` — no bike power meter.
-   `normalized_power` is `None` everywhere. This is the exact inverse of the usual
-   assumption, and it drives which chart series exist per sport.
-4. **Consecutive session windows overlap by under a second** (session *n* ends
-   11:51:42.054, session *n+1* starts 11:51:42). Inclusive bucketing double-counts 1–2
-   records per race. Use **half-open** `[start, end)` intervals.
-5. **Transitions are real segments**, not near-zero: T1 of 552 m / 3:36 in one race. But
-   T2 in the other is 20 m / 7.7 s — the watch barely caught it, so recorded T2 will
-   diverge sharply from official T2. Good motivation for the official-vs-recorded view;
-   bad news for anyone treating recorded transitions as ground truth.
-6. **`SESSION WEATHER HUMIDITY` is declared but never populated** in either file, and
-   `AVG METs` likewise. `WORKOUT RPE ESTIMATED` appears in one file only. Treat every
-   developer field as optional, and weather as **API-only** in practice.
-7. **Field names are the `enhanced_` variants**: `enhanced_speed` (91–96 % of records),
-   `enhanced_altitude` (80–82 %). Altitude is missing from a fifth of points, so elevation
-   profiles need gap handling. Swim laps have **no `avg_speed`** — swim pace must be
-   derived from distance ÷ time.
-8. **Cadence is unreliable**: present on 35 % of records in one file, entirely absent from
-   the other. Not a field to build a feature on.
-9. **Running dynamics are present** — `vertical_oscillation`, `step_length`,
-   `stance_time`, `vertical_ratio` (~22–29 % of records). Not modelled; they land in
-   `raw_data` and can be promoted later.
-10. **`manufacturer` reads `development`**, not `apple` — the third-party converter
-    rewrites it, so device detection can't rely on it.
-11. **Timestamps are UTC; filenames encode local time** (`...131906` vs `time_created`
-    11:19:06 UTC — CEST, +2). `Race.date` must be the *local* race date, derived from the
-    start location's timezone, or an early-morning start will land on the wrong day.
+This is the part that breaks naive importers. **Nothing device-specific may be assumed
+from the sport alone.**
 
-Also present and unused for now: `sport` (×5) and `time_in_zone` (×5) messages, the
-latter carrying HR-zone distribution per session — a cheap future addition.
+| | Apple Watch | Garmin |
+|---|---|---|
+| `manufacturer` | `development` (converter rewrites it) | `garmin` |
+| Bike power | absent — no power meter | **`avg_power` 225 W, `normalized_power` 250 W**, plus full cycling dynamics (L/R power phase, torque effectiveness, pedal smoothness, PCO) |
+| Run power | **295–307 W** (watch-estimated) | absent |
+| Swim laps | 1 lap for the whole swim | **4 × 500 m laps** |
+| Trailing partial bike lap | **dropped** | present; all laps reconcile exactly |
+| Sampling | uniform 1 Hz | **smart recording**, variable — the run holds 699 points for 2 803 s (~0.25 Hz) while the bike holds 4 349 for 4 355 s (1 Hz) |
+| Temperature | absent | **present on 100 % of records**, 24–35 °C |
+| Cadence | 35 % of records in one file, absent in the other | 100 % of records |
+| Developer fields | `SESSION UUID`, `INDOOR`, `ACTIVITY TYPE`, `RPE ESTIMATED`, `AVG METs`, `WEATHER HUMIDITY` | none at all |
+| `elapsed` vs `timer` | identical — no pauses | **differ** (bike 4 354.9 s vs 4 348.9 s) |
 
-**Library: `fitdecode`** — confirmed working on both files with no malformed-frame errors.
+### Traps
+
+1. **Never derive segment totals by summing laps.** Apple drops the bike's trailing
+   partial lap: 6 × 5 000 m against a 33 746 m session, understating the bike by 3.7 km.
+   Garmin includes it and reconciles exactly — so validating against a Garmin file, or
+   against Apple's *run*, would suggest lap-summing is safe. It isn't. Session totals are
+   authoritative; laps carry pacing shape only.
+2. **Power presence is a property of the device, not the sport.** Apple gives running
+   power and no bike power; Garmin gives bike power (with `normalized_power`) and no
+   running power. Schema keeps `avg_power` on every segment and the UI shows the series
+   only where data exists.
+3. **Consecutive session windows overlap sub-second** (one ends 11:51:42.054, the next
+   starts 11:51:42) — inclusive bucketing double-counts. Use half-open `[start, end)`.
+4. **Records can fall outside every session window.** The Garmin file has one orphan at
+   12:39:07, in the 1.1 s gap between bike end and T2 start. Assert-every-record-lands
+   would reject a valid file; orphans are dropped and counted, not fatal.
+5. **Store elapsed *and* moving time.** Garmin's differ (pauses exist), Apple's don't. A
+   single `total_time` column silently picks one and loses the other.
+6. **Transitions are real segments but poorly recorded.** T1 ranges 105–552 m; the Apple
+   T2 of 20 m / 7.7 s is essentially a miss. Recorded transitions are not ground truth —
+   which is the argument for official-vs-recorded being the centerpiece view.
+7. **Lap counts per sport vary by vendor**, so per-sport chart shape can't be hardcoded:
+   an Apple swim is one lap (a summary tile, not a line), a Garmin swim is four.
+8. **Garmin temperature is device temperature, not air temperature** — a sun-exposed wrist
+   sensor reading 35 °C max, mean 29.3 °C. Store it, but let the weather API remain the
+   source for `Race.weather_temp_c`.
+9. **Field names are the `enhanced_` variants** (`enhanced_speed`, `enhanced_altitude`).
+   Altitude is missing from ~20 % of records on both vendors, so elevation profiles need
+   gap handling.
+10. **Developer fields are Apple-only and sparse** — `AVG METs` is declared but never
+    populated, `RPE ESTIMATED` appears in one file of two, and `SESSION WEATHER HUMIDITY`
+    is never populated at all. Weather is API-only in practice.
+
+Present and unused: `time_in_zone` (HR-zone distribution per session, both vendors),
+Garmin `gps_metadata` (8 963 messages, but no position fields beyond what `record`
+already has) and Garmin `split` messages (run/walk detection — `rwd_run`/`rwd_walk`, not
+multisport splits). Garmin also emits ~9 500 messages across undecoded `unknown_*` types,
+which land in `raw_data` untouched.
+
+**Library: `fitdecode`** — parsed all three files with no malformed-frame errors,
+including Garmin's undecoded proprietary messages.
 
 **Import flow:**
 1. Upload FIT via `POST /api/imports/fit` (multipart), optionally with `race_id` to
@@ -312,6 +355,55 @@ latter carrying HR-zone distribution per session — a cheap future addition.
 Re-importing the same file for the same race replaces (not duplicates) the activities,
 via the uniqueness constraint above.
 
+### Single-sport uploads and manual grouping
+
+A multisport FIT file is the happy path: 5 sessions, one race, no user decisions. But it
+isn't the only shape data arrives in.
+
+**Strava has no multisport activity type** — a triathlon comes back as three or more
+separate activities, and the API offers no way to reassemble them. The same is true of any
+athlete whose watch wrote three separate files rather than one combined export. So the
+importer cannot assume one-file-one-race.
+
+The design: **every upload lands in a staging tray, and the user groups what belongs
+together.** Multisport files skip the tray by grouping themselves.
+
+```
+  upload N files ─┐
+                  ├─► parse ─► Upload rows ─┬─ multisport ─► auto-group ─► Race
+  Strava fetch  ──┘                         │
+                                            └─ single-sport ─► ungrouped tray
+                                                                    │
+                                              user selects 3 ───────┤
+                                                                    ▼
+                                                        assign segments ─► Race
+```
+
+1. `POST /api/uploads` accepts one or many files. Each is parsed, hashed, stored, and gets
+   an `Upload` row with its detected sport, start/end time and distance.
+2. Files detected as **multisport** (5 sessions) group themselves immediately — the
+   existing flow, unchanged.
+3. Everything else lands in the **ungrouped tray**, `GET /api/uploads?status=parsed`.
+4. The tray **proposes** groupings: uploads on the same local day, within a few hours of
+   each other, in swim → bike → run order. Proposals are suggestions the user confirms —
+   never auto-committed, since a Sunday brick session looks identical to a race.
+5. `POST /api/races/group` with the chosen `upload_ids` creates the `Race` and one
+   `RecordedActivity` per upload, plus their laps.
+6. Segments are assigned from each upload's detected sport, ordered by start time. If the
+   detection is ambiguous — two runs in one group, or an `other` sport — the UI asks
+   rather than guessing.
+
+Uploads are **deduplicated by `content_hash`**, so re-uploading the same file is a no-op
+rather than a second copy in the tray. Strava-sourced uploads dedupe on `external_id`.
+
+An upload can also be attached to an existing race (`POST /api/races/{id}/attach`), which
+covers backfilling a leg you forgot, or replacing one recorded from the wrong device.
+
+**Transitions are the gap in this path.** A grouped set of three single-sport activities
+contains no T1/T2 — those legs were never recorded separately. The time between the swim
+ending and the bike starting is real and known, but attributing it to a transition is an
+inference, not a measurement. See §9 for the open decision on synthesizing them.
+
 ### Weather enrichment
 
 The watch declares a humidity field but never fills it — neither fixture carries a value
@@ -325,15 +417,17 @@ races whose location was corrected after import.
 ### Strava (secondary, deferred)
 
 Why it isn't primary:
-- No native "race" filter/category in the API. `workout_type` exists for runs only
-  (`race`/`long_run`/`workout`/default) and relies on manual tagging on Strava — unreliable.
-- No native triathlon/multisport activity type in most cases — swim/bike/run legs often
-  land as 3+ separate activities unless a combined multisport FIT was uploaded.
-- Practical use: pull activities by date range, apply heuristics (name matching,
-  `workout_type`, same-day clustering) to reconstruct races. Backfill, not source of truth.
-- OAuth required per athlete; rate limits (100/15 min, 1000/day) are fine for personal use.
+- **No multisport activity type.** A triathlon arrives as 3+ separate activities with no
+  link between them — the reason the grouping tray above exists at all.
+- No native "race" filter. `workout_type` exists for runs only (`race`/`long_run`/
+  `workout`/default) and depends on manual tagging — unreliable.
+- The data is thinner than FIT: no per-second developer fields, coarser streams.
+- OAuth per athlete; rate limits (100/15 min, 1000/day) are fine for personal use.
 
-Build this only once the FIT pipeline is solid. See §8.
+When built, it reuses the grouping path rather than adding a parallel one: fetch
+activities by date range → create `Upload` rows with `source=strava` and no file → they
+appear in the same tray, with the same proposals, and group the same way. The only
+Strava-specific code is the OAuth dance and the activity→`Upload` mapping.
 
 ---
 
@@ -368,9 +462,13 @@ written unscoped is a leak to fix later, and the bug it produces is other people
 data appearing in your timeline.
 
 Concretely:
-- `Race.user_id` is the single ownership root. `OfficialResult`, `RecordedActivity` and
-  `LapSplit` inherit ownership through their `race_id` — they carry no `user_id` of their
-  own, so there is exactly one place isolation can be got wrong.
+- `Race.user_id` is the ownership root for race data. `OfficialResult`,
+  `RecordedActivity` and `LapSplit` inherit ownership through their `race_id` — they carry
+  no `user_id` of their own, so there is one place isolation can be got wrong.
+- `Upload` is the one exception: it exists *before* any race, so it carries its own
+  `user_id`. That makes two roots, not one — so grouping must assert that every
+  `upload_id` in a request is owned by the caller before it creates anything, and the tray
+  query is scoped by `user_id` directly.
 - Every race lookup goes through one helper (`get_owned_race(db, user, race_id)`) that
   filters by owner and raises 404 — not 403 — for someone else's race, so the API doesn't
   confirm that an id exists. Endpoints never build a `Race` query by hand.
@@ -400,7 +498,11 @@ All under `/api`. Response shapes drive the generated TS types.
 | `PUT` | `/races/{id}/official-result` | Upsert manually entered official times/placings. |
 | `GET` | `/races/{id}/track` | GPS polylines for the map, one per segment. Simplified by default (`?precision=`), full stream on request. Split out because it's by far the heaviest payload. |
 | `GET` | `/races/{id}/laps` | Lap splits, optional `?sport=` filter, for the pacing chart. |
-| `POST` | `/imports/fit` | Multipart FIT upload; optional `race_id`. Returns the race. |
+| `POST` | `/uploads` | Multipart upload of one or many files. Parses each, dedupes by content hash, auto-groups multisport files into a race, leaves single-sport files in the tray. |
+| `GET` | `/uploads` | The ungrouped tray, with suggested groupings. `?status=` filter. |
+| `DELETE` | `/uploads/{id}` | Discard an upload (and its stored file). |
+| `POST` | `/races/group` | Create a race from selected `upload_ids` + segment assignment. |
+| `POST` | `/races/{id}/attach` | Attach further uploads to an existing race. |
 | `POST` | `/races/{id}/weather/refresh` | Re-run weather enrichment. |
 | `GET` | `/stats/summary` | Aggregate strip: race count, total distance, total elevation. Optional date range. |
 
@@ -442,7 +544,8 @@ rendering. The full stream stays in the database.
   split chart, weather + carbs metadata.
 - **Race edit** (`/races/:id/edit`) — manual entry: race metadata, official result
   times/placings, carbs.
-- **Import** (`/import`) — FIT upload, with an option to attach to an existing race.
+- **Import** (`/import`) — multi-file upload, plus the ungrouped tray where single-sport
+  activities are grouped into races (§3).
 - **Aggregate strip** — thin, single-line summary (total races, distance, elevation)
   above the timeline. Deliberately not a full dashboard: timeline browsing, not aggregate
   stats, is the primary interaction.
@@ -510,7 +613,9 @@ information, not a generic numbered-sequence marker.
 | `CourseMap` | react-leaflet wrapper rendering the simplified track polylines |
 | `RaceForm` | Manual entry: race metadata + carbs |
 | `OfficialResultForm` | Manual entry: official times and placings |
-| `FitUpload` | Drag/drop FIT upload with parse feedback |
+| `FitUpload` | Drag/drop upload, multi-file, with per-file parse feedback |
+| `GroupingTray` | Ungrouped uploads with suggested groupings; select + confirm to create a race |
+| `SegmentAssign` | Per-upload segment picker, shown when detection is ambiguous |
 
 ---
 
@@ -533,7 +638,8 @@ information, not a generic numbered-sequence marker.
 | M0 | Scaffold | Repo layout, `docker-compose` with Postgres, FastAPI hello-world, Vite app, lint/format config |
 | M1 | Data model | SQLAlchemy models, Alembic initial migration, Pydantic schemas |
 | M1.5 | Auth | `User` model, argon2 hashing, JWT cookie sessions, `current_user` dependency, seed-user CLI, login page + auth-gated routing |
-| M2 | FIT import | `fit_import.py` + `POST /imports/fit`, tested against both fixtures — asserting the §3 traps: session totals over lap sums, half-open bucketing, run-not-bike power, local race date |
+| M2 | FIT import | `fit_import.py` + `POST /uploads`, tested against all three fixtures — asserting the §3 traps: session totals over lap sums, half-open bucketing, orphan records tolerated, device-dependent power, elapsed vs moving time, local race date |
+| M2.5 | Grouping | `Upload` staging, ungrouped tray, same-day proposals, `POST /races/group` — the path Strava will reuse |
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
 | M5 | Detail UI | `SplitsComparison`, `SplitsChart`, `CourseMap` |
@@ -592,4 +698,11 @@ Carried forward from both source plans, plus seams that surfaced while merging t
   but no UI is specified for them. Post-v1.
 - **Opening to other users** — registration, password reset, admin surface and quotas
   are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
+- **Synthesized transitions** — when three single-sport activities are grouped, T1/T2
+  don't exist as recorded data. The gap between legs is known but attributing it to a
+  transition is inference. Open: leave transitions null, or create them flagged as
+  derived. See the question raised alongside this plan.
+- **Garmin `time_in_zone` and cycling dynamics** — L/R balance, torque effectiveness,
+  pedal smoothness and HR-zone distributions are all parsed into `raw_data` but not
+  modelled or surfaced. Cheap to promote later if they turn out to be interesting.
 - **CI/CD** — manual `docker compose up -d --build` for v1.
