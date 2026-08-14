@@ -26,6 +26,7 @@ polished. This is a personal tool, not a showcase.
 | Tenancy | Multi-tenant by design, single-tenant in operation — you first, others later |
 | FIT upload | Multisport files auto-create a draft race; single-sport files stage for manual grouping |
 | Carbs | Per-segment (bike / run) |
+| Grouping | In v1 (M2.5); synthesized transitions flagged `is_derived` |
 | v1 scope | M0–M7; Strava deferred |
 
 ---
@@ -179,6 +180,8 @@ entered_at
 id (PK)
 race_id (FK)
 segment           enum: swim, t1, bike, t2, run
+is_derived        bool — true for transitions synthesized from gaps between grouped
+                  single-sport uploads; false for anything actually recorded (§3 Grouping)
 source            enum: fit_upload, strava
 external_id       nullable (Strava activity id)
 start_time
@@ -399,10 +402,21 @@ rather than a second copy in the tray. Strava-sourced uploads dedupe on `externa
 An upload can also be attached to an existing race (`POST /api/races/{id}/attach`), which
 covers backfilling a leg you forgot, or replacing one recorded from the wrong device.
 
-**Transitions are the gap in this path.** A grouped set of three single-sport activities
-contains no T1/T2 — those legs were never recorded separately. The time between the swim
-ending and the bike starting is real and known, but attributing it to a transition is an
-inference, not a measurement. See §9 for the open decision on synthesizing them.
+**Transitions in a grouped race are synthesized.** Three single-sport activities contain
+no T1/T2 — those legs were never recorded separately. Grouping therefore creates them from
+the gaps between consecutive legs (`t1.total_time = bike.start_time − swim.end_time`),
+marked `is_derived = true`. This keeps the segment bar complete and makes recorded total
+reconcile against official total, which a missing transition would otherwise break in a
+way that reads as a bug.
+
+The flag matters: a derived transition is an inference from two timestamps, not a
+measurement. It carries no distance, no GPS track, no HR — only a duration — and the UI
+renders it visually distinct (hatched in the `SegmentBar`, annotated in
+`SplitsComparison`) so it is never mistaken for recorded data. Transitions from a real
+multisport file have `is_derived = false` and keep their distance and track.
+
+A negative or implausibly large gap (overlapping activities, or legs hours apart) means
+the grouping is wrong; the API rejects it rather than writing a nonsense transition.
 
 ### Weather enrichment
 
@@ -605,7 +619,7 @@ information, not a generic numbered-sequence marker.
 |---|---|
 | `TimelineSpine` | Vertical line + per-race marker dots |
 | `RaceCard` | Timeline preview card (name, date, badge, total time, segment bar) |
-| `SegmentBar` | Proportional swim/bike/run bar, reused in card + detail view |
+| `SegmentBar` | Proportional swim/bike/run bar, reused in card + detail view; derived transitions render hatched |
 | `StatStrip` | Top aggregate line (races / distance / elevation) |
 | `RaceDetail` | Full detail page for one race |
 | `SplitsComparison` | Official vs. recorded table, per segment incl. T1/T2, with deltas |
@@ -639,7 +653,7 @@ information, not a generic numbered-sequence marker.
 | M1 | Data model | SQLAlchemy models, Alembic initial migration, Pydantic schemas |
 | M1.5 | Auth | `User` model, argon2 hashing, JWT cookie sessions, `current_user` dependency, seed-user CLI, login page + auth-gated routing |
 | M2 | FIT import | `fit_import.py` + `POST /uploads`, tested against all three fixtures — asserting the §3 traps: session totals over lap sums, half-open bucketing, orphan records tolerated, device-dependent power, elapsed vs moving time, local race date |
-| M2.5 | Grouping | `Upload` staging, ungrouped tray, same-day proposals, `POST /races/group` — the path Strava will reuse |
+| M2.5 | Grouping | `Upload` staging, ungrouped tray, same-day proposals, `POST /races/group`, derived transitions — the path Strava will reuse |
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
 | M5 | Detail UI | `SplitsComparison`, `SplitsChart`, `CourseMap` |
@@ -698,10 +712,6 @@ Carried forward from both source plans, plus seams that surfaced while merging t
   but no UI is specified for them. Post-v1.
 - **Opening to other users** — registration, password reset, admin surface and quotas
   are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
-- **Synthesized transitions** — when three single-sport activities are grouped, T1/T2
-  don't exist as recorded data. The gap between legs is known but attributing it to a
-  transition is inference. Open: leave transitions null, or create them flagged as
-  derived. See the question raised alongside this plan.
 - **Garmin `time_in_zone` and cycling dynamics** — L/R balance, torque effectiveness,
   pedal smoothness and HR-zone distributions are all parsed into `raw_data` but not
   modelled or surfaced. Cheap to promote later if they turn out to be interesting.
