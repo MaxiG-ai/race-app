@@ -27,6 +27,8 @@ polished. This is a personal tool, not a showcase.
 | FIT upload | Multisport files auto-create a draft race; single-sport files stage for manual grouping |
 | Carbs | Per-segment (bike / run) |
 | Grouping | In v1 (M2.5); synthesized transitions flagged `is_derived` |
+| Gear | Tracked per segment (M6.5); auto-detected from sensor serials, shoes manual |
+| Duplicate recordings | Kept, one marked `is_primary` per segment |
 | v1 scope | M0–M7; Strava deferred |
 
 ---
@@ -71,12 +73,14 @@ race-app/
       services/
         fit_import.py    # fitdecode parsing → normalized dicts (vendor-agnostic)
         grouping.py      # group single-sport uploads into a race (§3 Grouping)
+        gear.py          # device_info serial → gear resolution (§3 Gear detection)
         weather.py       # Open-Meteo historical enrichment
         aggregates.py    # summary stats queries
         geo.py           # polyline simplification / downsampling
       migrations/        # Alembic
     tests/
-      fixtures/          # three real multisport FIT exports: 2x Apple, 1x Garmin (§3)
+      fixtures/          # 5 real files: 3 multisport (2 Apple, 1 Garmin), 1 Edge 540
+                         # single-sport with sensors, 1 Strava re-export (§3)
     pyproject.toml
   frontend/
     src/
@@ -160,6 +164,37 @@ race_id                FK nullable — set once grouped
 uploaded_at
 ```
 
+### `Gear` and `GearDevice`
+Equipment tracking — which bike and which shoes were used for a race, and how much
+distance each has accumulated.
+```
+Gear
+  id (PK)
+  user_id (FK, indexed)  own ownership root, like Upload — gear outlives any one race
+  kind                 enum: bike, shoes, wetsuit, other
+  name                 e.g. "Canyon Speedmax (race)", "Vaporfly 3"
+  brand / model        nullable
+  purchased_at         nullable
+  retired_at           nullable — retired gear is hidden from pickers, kept in history
+  distance_offset_m    default 0 — mileage accrued before tracking started
+  notes                nullable
+
+GearDevice              serial → gear mapping, populated as devices are recognised
+  id (PK)
+  gear_id (FK)
+  manufacturer         e.g. favero_electronics, shimano
+  serial_number        the stable identifier from FIT device_info
+  label                nullable, e.g. "Assioma pedals"
+
+activity_gear           association: which gear was used for which recorded segment
+  recorded_activity_id (FK)
+  gear_id (FK)
+  assigned_by          enum: auto_device, manual, inherited
+```
+
+Distance per gear is a query over `activity_gear` joined to primary `RecordedActivity`
+rows, plus `distance_offset_m` — no denormalised counter to drift out of sync.
+
 ### `OfficialResult` (1:1 with Race, manually entered)
 ```
 id (PK)
@@ -175,11 +210,18 @@ age_group_place   nullable
 entered_at
 ```
 
-### `RecordedActivity` (many:1 with Race — typically 5 rows per race)
+### `RecordedActivity` (many:1 with Race — 5+ rows per race; see `is_primary`)
 ```
 id (PK)
 race_id (FK)
+upload_id (FK)    nullable — which upload produced this row
 segment           enum: swim, t1, bike, t2, run
+is_primary        bool — the recording that counts for this segment. A leg recorded by
+                  two devices yields two rows; exactly one is primary. Default: the row
+                  with the richest data (power > no power, then longer duration), user
+                  overridable from the detail view.
+device_key        nullable — manufacturer + serial of the recording device, from
+                  device_info; how a segment's gear is inferred (§3 Gear)
 is_derived        bool — true for transitions synthesized from gaps between grouped
                   single-sport uploads; false for anything actually recorded (§3 Grouping)
 source            enum: fit_upload, strava
@@ -232,8 +274,11 @@ raw_data          jsonb
 - `LapSplit(sport, recorded_activity_id)` — fast per-sport filtering (e.g. "all run
   splits under 5:00/km").
 - `LapSplit(recorded_activity_id, lap_index)` — reconstruct lap order within one activity.
-- Unique constraint on `RecordedActivity(race_id, segment, source)` — makes re-import
-  idempotent rather than duplicating rows.
+- Unique constraint on `RecordedActivity(race_id, segment, upload_id)` — one row per
+  segment *per upload*, so two devices recording the same leg coexist (§3). Idempotency
+  comes from `Upload.content_hash`, not from this constraint.
+- Partial unique index on `RecordedActivity(race_id, segment) WHERE is_primary` — exactly
+  one primary recording per segment.
 
 ### Conventions
 - All durations stored as **seconds (integer)**; formatting is a frontend concern.
@@ -358,6 +403,46 @@ including Garmin's undecoded proprietary messages.
 Re-importing the same file for the same race replaces (not duplicates) the activities,
 via the uniqueness constraint above.
 
+### What Strava exports actually look like
+
+Three files downloaded from Strava for one race (Stutensee, 2026-06-21), named
+`Schwimmen`, `Rad` and `Lauf`, turned out to be **not three legs of one race**:
+
+| File | sha256 | Content |
+|---|---|---|
+| `Stutensee_Schwimmen_.fit` | `ff748711…` | the **full Apple Watch multisport file** — all 5 sessions |
+| `Stutensee_Lauf.fit` | `ff748711…` | **byte-identical to the swim file** |
+| `Stutensee_Rad_.fit` | `e2c08c08…` | a **different device**: Garmin Edge 540, 1 cycling session |
+
+Two consequences, both structural:
+
+**1. Strava's "export original" returns the uploaded file, not a per-activity file.** The
+swim and run downloads are the same bytes — Strava split the *activity list* but hands
+back the original combined upload for each. So downloading three activities can yield one
+distinct file, or two, or three, with no way to tell from the filename. Content-hash
+deduplication catches this, but the tray must **say** "identical to an upload you already
+have" rather than silently discarding a file the user deliberately selected.
+
+**2. The same segment can be recorded by two devices at once.** The bike leg exists twice
+here:
+
+| | Apple Watch (in multisport file) | Garmin Edge 540 (separate file) |
+|---|---|---|
+| Window | 07:41:45 – 08:15:58 | 07:43:03 – 08:16:23 |
+| Distance | 19 992 m | 19 634 m |
+| Power | — | **247 W avg, NP 261** |
+| Cadence | 2 (garbage) | **84** |
+
+Neither is wrong; the Edge is simply the better record of that leg, because the power
+meter and cadence sensor pair to it. The watch remains the only record of the swim and
+run. So a race's best data is **assembled across devices, per segment** — which the
+original one-recording-per-segment model could not express (see §2 `RecordedActivity`).
+
+The Edge file also carries two things the watch files don't:
+`timestamp_correlation`, giving the UTC↔local offset directly (+2 here), which removes the
+timezone guesswork for Garmin files; and a `sport` message named `TRIATHLON`, the activity
+profile.
+
 ### Single-sport uploads and manual grouping
 
 A multisport FIT file is the happy path: 5 sessions, one race, no user decisions. But it
@@ -417,6 +502,37 @@ multisport file have `is_derived = false` and keep their distance and track.
 
 A negative or implausibly large gap (overlapping activities, or legs hours apart) means
 the grouping is wrong; the API rejects it rather than writing a nonsense transition.
+
+### Gear detection
+
+Tracking which bike and shoes were raced is a stated goal, and the Edge file shows it can
+be largely automatic. Its `device_info` messages name every paired sensor by manufacturer
+and serial:
+
+| Device | Serial | What it identifies |
+|---|---|---|
+| `garmin` / `edge_540` | 3449642804 | the head unit |
+| `favero_electronics` | 1753485582 | Assioma power meter pedals |
+| `shimano` (product 12917) | 2783122544 | Di2 electronic groupset |
+| `polar_electro` | 584467901 | HR strap |
+
+Serials are stable across rides, so gear resolves itself after being named once:
+
+1. On import, collect every `device_info` serial in each session.
+2. Known serial → look up `GearDevice` → attach its `Gear` to that segment with
+   `assigned_by = auto_device`.
+3. Unknown serial → surface it in the UI as "new device seen: `favero_electronics`
+   1753485582 — which gear is this?" The user names it once; every past and future import
+   carrying that serial can then be backfilled.
+4. The user can always override; a manual assignment is never overwritten by detection.
+
+**Shoes cannot be detected this way.** Running shoes carry no sensor (barring a footpod),
+and the Apple Watch files list only the watch itself — no paired devices at all. So the
+run segment's gear is manual, with the last-used pair offered as the default. This is the
+same shape as carbs: the data isn't in the file, so the UI has to ask.
+
+The payoff is mileage per item — shoe rotation and drivetrain wear — computed from
+`activity_gear`, which is why gear attaches to `RecordedActivity` rather than to `Race`.
 
 ### Weather enrichment
 
@@ -479,10 +595,11 @@ Concretely:
 - `Race.user_id` is the ownership root for race data. `OfficialResult`,
   `RecordedActivity` and `LapSplit` inherit ownership through their `race_id` — they carry
   no `user_id` of their own, so there is one place isolation can be got wrong.
-- `Upload` is the one exception: it exists *before* any race, so it carries its own
-  `user_id`. That makes two roots, not one — so grouping must assert that every
-  `upload_id` in a request is owned by the caller before it creates anything, and the tray
-  query is scoped by `user_id` directly.
+- `Upload` and `Gear` are the exceptions: both exist independently of any race, so each
+  carries its own `user_id`. That makes three ownership roots, not one. Consequences:
+  grouping must assert every `upload_id` belongs to the caller before creating anything;
+  gear assignment must check the `Gear` *and* the `RecordedActivity`'s race; and both the
+  tray and the gear list are scoped by `user_id` directly.
 - Every race lookup goes through one helper (`get_owned_race(db, user, race_id)`) that
   filters by owner and raises 404 — not 403 — for someone else's race, so the API doesn't
   confirm that an id exists. Endpoints never build a `Race` query by hand.
@@ -517,6 +634,12 @@ All under `/api`. Response shapes drive the generated TS types.
 | `DELETE` | `/uploads/{id}` | Discard an upload (and its stored file). |
 | `POST` | `/races/group` | Create a race from selected `upload_ids` + segment assignment. |
 | `POST` | `/races/{id}/attach` | Attach further uploads to an existing race. |
+| `PATCH` | `/activities/{id}` | Set `is_primary`, or assign gear to this segment. |
+| `GET` | `/gear` | Gear list with accumulated distance per item. |
+| `POST` | `/gear` | Create a gear item. |
+| `PATCH` | `/gear/{id}` | Edit or retire a gear item. |
+| `GET` | `/gear/unknown-devices` | Sensor serials seen in imports with no gear mapping yet. |
+| `POST` | `/gear/{id}/devices` | Map a serial to a gear item; backfills past activities. |
 | `POST` | `/races/{id}/weather/refresh` | Re-run weather enrichment. |
 | `GET` | `/stats/summary` | Aggregate strip: race count, total distance, total elevation. Optional date range. |
 
@@ -557,7 +680,9 @@ rendering. The full stream stays in the database.
 - **Race detail** (`/races/:id`) — official vs. recorded comparison, course map, lap
   split chart, weather + carbs metadata.
 - **Race edit** (`/races/:id/edit`) — manual entry: race metadata, official result
-  times/placings, carbs.
+  times/placings, carbs, per-segment gear.
+- **Gear** (`/gear`) — inventory with accumulated distance, plus unmapped sensor serials
+  awaiting a name.
 - **Import** (`/import`) — multi-file upload, plus the ungrouped tray where single-sport
   activities are grouped into races (§3).
 - **Aggregate strip** — thin, single-line summary (total races, distance, elevation)
@@ -630,6 +755,10 @@ information, not a generic numbered-sequence marker.
 | `FitUpload` | Drag/drop upload, multi-file, with per-file parse feedback |
 | `GroupingTray` | Ungrouped uploads with suggested groupings; select + confirm to create a race |
 | `SegmentAssign` | Per-upload segment picker, shown when detection is ambiguous |
+| `GearPicker` | Per-segment gear assignment on the race detail view |
+| `GearList` | Gear inventory with accumulated distance; retire/rename |
+| `DevicePrompt` | "New sensor seen — which gear is this?" one-time mapping |
+| `RecordingSwitch` | Shown when a segment has >1 recording; pick which is primary |
 
 ---
 
@@ -642,6 +771,9 @@ information, not a generic numbered-sequence marker.
   to `Race.race_type` / `Race.date`).
 - Weather correlation with performance (temp/humidity on `Race`, joined to pacing data).
 - Manual carbs tracking per race, split bike vs. run.
+- Gear per race segment, auto-detected from sensor serials where possible, with
+  accumulated distance per bike and per pair of shoes.
+- Multiple recordings of the same segment from different devices, with one marked primary.
 
 ---
 
@@ -657,7 +789,8 @@ information, not a generic numbered-sequence marker.
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
 | M5 | Detail UI | `SplitsComparison`, `SplitsChart`, `CourseMap` |
-| M6 | Manual entry | Race form, official result form, carbs; FIT upload page |
+| M6 | Manual entry | Race form, official result form, carbs; upload page |
+| M6.5 | Gear | `Gear`/`GearDevice`, serial auto-detection with backfill, manual shoe assignment, distance-per-item |
 | M7 | Weather | Open-Meteo enrichment at import + refresh endpoint |
 | M7.5 | Deploy | Compose stack, Caddy + TLS, migrations on boot, backups (see §8) |
 | M8 | Strava | Deferred backfill path (see §3) |
@@ -712,6 +845,9 @@ Carried forward from both source plans, plus seams that surfaced while merging t
   but no UI is specified for them. Post-v1.
 - **Opening to other users** — registration, password reset, admin surface and quotas
   are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
+- **Gear component-level tracking** — chains, cassettes and tyres as sub-items of a bike,
+  each with their own mileage and service intervals. The `Gear` shape allows it; v1 tracks
+  whole items only.
 - **Garmin `time_in_zone` and cycling dynamics** — L/R balance, torque effectiveness,
   pedal smoothness and HR-zone distributions are all parsed into `raw_data` but not
   modelled or surfaced. Cheap to promote later if they turn out to be interesting.
