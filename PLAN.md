@@ -20,9 +20,11 @@ polished. This is a personal tool, not a showcase.
 | Decision | Choice |
 |---|---|
 | Database | PostgreSQL |
-| Hosting | Deployed (not localhost-only) |
+| Hosting | Deployed to a VPS via docker compose |
 | Auth | Real login with user accounts |
+| Tenancy | Multi-tenant by design, single-tenant in operation — you first, others later |
 | FIT upload | Auto-creates a draft race |
+| Carbs | Per-segment (bike / run) |
 | v1 scope | M0–M7; Strava deferred |
 
 ---
@@ -99,15 +101,15 @@ is_active
 created_at
 ```
 
-Registration is **not** open — accounts are seeded by a CLI command
-(`python -m app.cli create-user`). A public signup form on a personal tool is a liability
-with no upside.
+Registration is **not** open in v1 — accounts are seeded by a CLI command
+(`python -m app.cli create-user`). A public signup form is a liability until there's a
+reason for one; opening it up later is an additive change, not a rework.
 
 ### `Race`
 Event shell. One row per race event.
 ```
 id (PK)
-user_id (FK)          owner; every query is scoped by it — see §8 [Q]
+user_id (FK, indexed) owner; every read and write is scoped by it — see §4 Tenancy
 name
 date
 location_name
@@ -116,10 +118,17 @@ race_type             enum: sprint, olympic, half_iron, full_iron, custom
 weather_temp_c        nullable, from weather API enrichment
 weather_humidity_pct  nullable, prefer FIT value if present, else API
 weather_conditions    nullable, e.g. "clear", "overcast"
-carbs_g               nullable, manual entry (fueling isn't in FIT data)
+carbs_bike_g          nullable, manual entry (fueling isn't in FIT data)
+carbs_run_g           nullable, manual entry
 notes                 nullable, free text
 created_at / updated_at
 ```
+
+Carbs live on `Race` as two nullable columns rather than on `RecordedActivity`, because
+fueling is entered by hand and must be recordable for a race that has no FIT import yet.
+Swim is omitted deliberately — nobody fuels mid-swim. Total carbs is derived on read, not
+stored. If fueling ever needs finer structure (per-lap, or gel-by-gel), it graduates to
+its own `RaceFueling` table; two columns don't justify one now.
 
 ### `OfficialResult` (1:1 with Race, manually entered)
 ```
@@ -281,6 +290,30 @@ behind a login.
 - **Frontend**: a login page, an auth-gated route wrapper, and a TanStack Query error
   handler that redirects to login on 401.
 
+### Tenancy
+
+The app is built for you first, with the intent to open it to other athletes later. That
+argues for **multi-tenant by design, single-tenant in operation**: the isolation is real
+from day one, but none of the account-management surface gets built until it's needed.
+Data isolation is the one thing that is genuinely expensive to retrofit — every query
+written unscoped is a leak to fix later, and the bug it produces is other people's race
+data appearing in your timeline.
+
+Concretely:
+- `Race.user_id` is the single ownership root. `OfficialResult`, `RecordedActivity` and
+  `LapSplit` inherit ownership through their `race_id` — they carry no `user_id` of their
+  own, so there is exactly one place isolation can be got wrong.
+- Every race lookup goes through one helper (`get_owned_race(db, user, race_id)`) that
+  filters by owner and raises 404 — not 403 — for someone else's race, so the API doesn't
+  confirm that an id exists. Endpoints never build a `Race` query by hand.
+- Aggregates in `services/aggregates.py` take a `user_id` argument. No unscoped
+  `SELECT ... FROM races` anywhere, including `/stats/summary`.
+- Tests assert isolation directly: a second seeded user must get an empty timeline, a 404
+  on the first user's race detail, and zeroed summary stats.
+
+Deferred until it's actually opened up: registration, password reset by email, admin
+views, per-user quotas, and any notion of sharing a race between accounts.
+
 ### Endpoints
 
 All under `/api`. Response shapes drive the generated TS types.
@@ -294,7 +327,7 @@ All under `/api`. Response shapes drive the generated TS types.
 | `GET` | `/races` | Timeline list — paginated, newest first. Lightweight preview payload: name, date, type, badges, official + recorded segment totals for the `SegmentBar`. **No `gps_track`.** |
 | `GET` | `/races/{id}` | Full detail: race, official result, recorded activities (without `gps_track`), lap splits. |
 | `POST` | `/races` | Create a race manually. |
-| `PATCH` | `/races/{id}` | Edit race metadata, incl. `carbs_g`, location, notes. |
+| `PATCH` | `/races/{id}` | Edit race metadata, incl. per-segment carbs, location, notes. |
 | `DELETE` | `/races/{id}` | Delete race and cascade its activities/laps. |
 | `PUT` | `/races/{id}/official-result` | Upsert manually entered official times/placings. |
 | `GET` | `/races/{id}/track` | GPS polylines for the map, one per segment. Simplified by default (`?precision=`), full stream on request. Split out because it's by far the heaviest payload. |
@@ -421,7 +454,7 @@ information, not a generic numbered-sequence marker.
 - Pacing trends per sport / distance / time (via `LapSplit`, sliced by `sport` and joined
   to `Race.race_type` / `Race.date`).
 - Weather correlation with performance (temp/humidity on `Race`, joined to pacing data).
-- Manual carbs tracking per race.
+- Manual carbs tracking per race, split bike vs. run.
 
 ---
 
@@ -438,7 +471,8 @@ information, not a generic numbered-sequence marker.
 | M5 | Detail UI | `SplitsComparison`, `SplitsChart`, `CourseMap` |
 | M6 | Manual entry | Race form, official result form, carbs; FIT upload page |
 | M7 | Weather | Open-Meteo enrichment at import + refresh endpoint |
-| M8 | Strava | Deferred backfill path (see §8) |
+| M7.5 | Deploy | Compose stack, Caddy + TLS, migrations on boot, backups (see §8) |
+| M8 | Strava | Deferred backfill path (see §3) |
 
 M2 is the highest-risk step and should be built against a real file early; everything
 downstream depends on its normalized output. M1.5 comes before it so no endpoint is ever
@@ -446,22 +480,39 @@ written unauthenticated and retrofitted later.
 
 ---
 
-## 8. Open Decisions / Deferred
+## 8. Deployment
+
+Single VPS, docker compose, four services:
+
+| Service | Notes |
+|---|---|
+| `caddy` | Reverse proxy, automatic TLS via Let's Encrypt. Serves the built frontend as static files and proxies `/api` to the backend. |
+| `backend` | uvicorn behind gunicorn. Entrypoint runs `alembic upgrade head` before serving, so a deploy can't drift from its schema. |
+| `db` | Postgres with a named volume. Never publishes a host port — reachable only on the compose network. |
+| `frontend` | Build-only stage; emits static assets into a volume Caddy serves. No Node process in production. |
+
+- **Config**: twelve-factor, all via env vars (`DATABASE_URL`, `JWT_SECRET`,
+  `CORS_ORIGINS`, `OPEN_METEO_BASE_URL`). A committed `.env.example` documents them; the
+  real `.env` is gitignored.
+- **Upload limits**: FIT files are small (single-digit MB), but Caddy's default request
+  body cap still needs raising explicitly, and the backend rejects oversized or
+  non-FIT uploads before parsing.
+- **Original FIT retention**: uploaded files are kept verbatim on a mounted volume,
+  keyed by import id. `raw_data` holds the *parsed* payload, which is only as good as the
+  parser at import time — keeping the original means the whole corpus can be re-imported
+  when the parser improves, rather than being re-uploaded by hand.
+- **Backups**: nightly `pg_dump` to the same volume with rotation, plus the FIT originals.
+  Both belong in whatever offsite copy the VPS already has; a personal race history has no
+  other source once the watch data ages out.
+- **Deploy**: `git pull && docker compose up -d --build`. No CI/CD pipeline in v1 — a
+  GitHub Actions workflow can be added once the thing is worth deploying often.
+
+---
+
+## 9. Open Decisions / Deferred
 
 Carried forward from both source plans, plus seams that surfaced while merging them.
-Items marked **[Q]** are open and asked directly alongside this plan.
 
-- **[Q] Multi-user semantics** — real login is decided, but not what it implies. Is this
-  one account with a login gate (auth is purely a lock on the door), or genuinely
-  multi-tenant with other athletes having their own races? The plan assumes `Race.user_id`
-  scoping either way, which costs little now and is painful to retrofit — but if others
-  will use it, `/stats/summary` and every query need per-user scoping tests, and account
-  seeding becomes a recurring chore rather than a one-off.
-- **[Q] Deploy target** — a VPS with docker compose + Caddy/nginx for TLS, a PaaS
-  (Fly.io / Railway / Render), or something you already run? Determines how migrations,
-  secrets, backups, and the FIT upload size limit are handled.
-- **[Q] Carbs granularity** — per-race total vs. per-segment (bike/run only). Leaning
-  per-race for simplicity unless segment-level fueling analysis becomes a priority.
 - **`gps_track` storage** — JSONB now; PostGIS `geometry` only if spatial queries become
   a real need.
 - **Strava import** — build as secondary backfill once FIT import is solid, using
@@ -471,3 +522,6 @@ Items marked **[Q]** are open and asked directly alongside this plan.
 - **Dark mode** — not planned for v1.
 - **Cross-race trend views** — the schema supports pacing trends and weather correlation,
   but no UI is specified for them. Post-v1.
+- **Opening to other users** — registration, password reset, admin surface and quotas
+  are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
+- **CI/CD** — manual `docker compose up -d --build` for v1.
