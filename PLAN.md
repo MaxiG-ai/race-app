@@ -1,8 +1,9 @@
 # Triathlon Racing History — Implementation Plan
 
-Personal, single-user analytics web app for triathlon racing history. Timeline-first
-browsing of past races, drilling into per-race detail: official vs. recorded splits,
-course map, pacing charts, weather and fueling.
+Personal analytics web app for triathlon racing history. Timeline-first browsing of past
+races, drilling into per-race detail: official vs. recorded splits, course map, pacing
+charts, weather and fueling. Built for one athlete now, with the data model prepared for
+opening it to others later.
 
 Two data sources feed the model:
 - **Official results** — manually entered by the user (race organizer timing).
@@ -83,7 +84,10 @@ race-app/
       types/             # generated from FastAPI OpenAPI schema
       lib/               # formatting helpers (pace, time, duration)
     package.json
-  docker-compose.yml     # postgres (+ optional backend/frontend services)
+  docker-compose.yml     # local dev: postgres
+  docker-compose.prod.yml # VPS: caddy, backend, db, frontend build (see §8)
+  Caddyfile
+  .env.example
   PLAN.md
 ```
 
