@@ -15,6 +15,16 @@ things.
 Priority throughout: minimal framework overhead, clean and functional over highly
 polished. This is a personal tool, not a showcase.
 
+## Decisions
+
+| Decision | Choice |
+|---|---|
+| Database | PostgreSQL |
+| Hosting | Deployed (not localhost-only) |
+| Auth | Real login with user accounts |
+| FIT upload | Auto-creates a draft race |
+| v1 scope | M0–M7; Strava deferred |
+
 ---
 
 ## 1. Architecture
@@ -52,7 +62,8 @@ race-app/
       db.py              # engine, session dependency
       models/            # SQLAlchemy ORM: race, official_result, recorded_activity, lap_split
       schemas/           # Pydantic request/response models
-      routers/           # races, imports, stats, weather
+      routers/           # auth, races, imports, stats, weather
+      auth/              # password hashing, JWT issue/verify, current_user dependency
       services/
         fit_import.py    # fitdecode parsing → normalized dicts
         weather.py       # Open-Meteo historical enrichment
@@ -78,10 +89,25 @@ race-app/
 
 ## 2. Data Model
 
+### `User`
+```
+id (PK)
+email                 unique
+password_hash         argon2 (via passlib/argon2-cffi)
+display_name          nullable
+is_active
+created_at
+```
+
+Registration is **not** open — accounts are seeded by a CLI command
+(`python -m app.cli create-user`). A public signup form on a personal tool is a liability
+with no upside.
+
 ### `Race`
 Event shell. One row per race event.
 ```
 id (PK)
+user_id (FK)          owner; every query is scoped by it — see §8 [Q]
 name
 date
 location_name
@@ -234,12 +260,37 @@ Build this only once the FIT pipeline is solid. See §8.
 
 ---
 
-## 4. API Surface
+## 4. Auth & API Surface
+
+### Auth
+
+The app is deployed and reachable from the open internet, so every data endpoint sits
+behind a login.
+
+- **Passwords**: argon2 hashes, never stored or logged in plaintext.
+- **Sessions**: JWT access token (short-lived) + refresh token, both in `HttpOnly`,
+  `Secure`, `SameSite=Lax` cookies. Cookies over `localStorage` so a script injection
+  can't exfiltrate the token.
+- **Enforcement**: a `current_user` FastAPI dependency on every router except
+  `/auth/login` and `/health`. Applied at router level, not per endpoint, so a new
+  endpoint is authenticated by default rather than by remembering to add it.
+- **Accounts**: seeded via CLI. No public registration, no password-reset email flow
+  (reset is a CLI command too).
+- **CORS**: locked to the deployed frontend origin, `allow_credentials=True`.
+- **Rate limiting**: on `/auth/login` specifically, to blunt credential stuffing.
+- **Frontend**: a login page, an auth-gated route wrapper, and a TanStack Query error
+  handler that redirects to login on 401.
+
+### Endpoints
 
 All under `/api`. Response shapes drive the generated TS types.
 
 | Method | Path | Purpose |
 |---|---|---|
+| `POST` | `/auth/login` | Email + password → sets session cookies. |
+| `POST` | `/auth/logout` | Clears cookies. |
+| `POST` | `/auth/refresh` | Exchanges refresh token for a new access token. |
+| `GET` | `/auth/me` | Current user; used by the frontend to decide login state on boot. |
 | `GET` | `/races` | Timeline list — paginated, newest first. Lightweight preview payload: name, date, type, badges, official + recorded segment totals for the `SegmentBar`. **No `gps_track`.** |
 | `GET` | `/races/{id}` | Full detail: race, official result, recorded activities (without `gps_track`), lap splits. |
 | `POST` | `/races` | Create a race manually. |
@@ -282,6 +333,8 @@ rendering. The full stream stays in the database.
 
 ### Information Architecture
 
+- **Login** (`/login`) — the only unauthenticated route; everything else redirects here
+  on 401.
 - **Timeline** (`/`) — chronological feed of races, most recent first, each entry a
   preview card.
 - **Race detail** (`/races/:id`) — official vs. recorded comparison, course map, lap
@@ -378,6 +431,7 @@ information, not a generic numbered-sequence marker.
 |---|---|---|
 | M0 | Scaffold | Repo layout, `docker-compose` with Postgres, FastAPI hello-world, Vite app, lint/format config |
 | M1 | Data model | SQLAlchemy models, Alembic initial migration, Pydantic schemas |
+| M1.5 | Auth | `User` model, argon2 hashing, JWT cookie sessions, `current_user` dependency, seed-user CLI, login page + auth-gated routing |
 | M2 | FIT import | `fit_import.py` + `POST /imports/fit`, tested against a real fixture file |
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
@@ -387,23 +441,26 @@ information, not a generic numbered-sequence marker.
 | M8 | Strava | Deferred backfill path (see §8) |
 
 M2 is the highest-risk step and should be built against a real file early; everything
-downstream depends on its normalized output.
+downstream depends on its normalized output. M1.5 comes before it so no endpoint is ever
+written unauthenticated and retrofitted later.
 
 ---
 
 ## 8. Open Decisions / Deferred
 
 Carried forward from both source plans, plus seams that surfaced while merging them.
-Items marked **[Q]** are asked directly alongside this plan.
+Items marked **[Q]** are open and asked directly alongside this plan.
 
-- **[Q] Auth** — single-user tool: no auth at all, a single shared password, or a real
-  login? Depends on whether it's ever exposed beyond localhost.
-- **[Q] Database** — Postgres (assumed above; jsonb, PostGIS upgrade path) vs. SQLite
-  (zero-ops for a personal tool, JSON1 covers the jsonb use, but closes the PostGIS door).
-- **[Q] Deployment** — local-only (`docker compose up`) vs. deployed somewhere.
-- **[Q] FIT-to-race binding** — should uploading a FIT create a draft race automatically,
-  or must the race exist first and the upload attach to it?
-- **Carbs granularity** — per-race total vs. per-segment (bike/run only). Leaning
+- **[Q] Multi-user semantics** — real login is decided, but not what it implies. Is this
+  one account with a login gate (auth is purely a lock on the door), or genuinely
+  multi-tenant with other athletes having their own races? The plan assumes `Race.user_id`
+  scoping either way, which costs little now and is painful to retrofit — but if others
+  will use it, `/stats/summary` and every query need per-user scoping tests, and account
+  seeding becomes a recurring chore rather than a one-off.
+- **[Q] Deploy target** — a VPS with docker compose + Caddy/nginx for TLS, a PaaS
+  (Fly.io / Railway / Render), or something you already run? Determines how migrations,
+  secrets, backups, and the FIT upload size limit are handled.
+- **[Q] Carbs granularity** — per-race total vs. per-segment (bike/run only). Leaning
   per-race for simplicity unless segment-level fueling analysis becomes a priority.
 - **`gps_track` storage** — JSONB now; PostGIS `geometry` only if spatial queries become
   a real need.
