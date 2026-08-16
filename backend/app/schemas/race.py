@@ -113,3 +113,15 @@ class RaceDetail(RaceRead):
     official_result: OfficialResultRead | None = None
     recorded_activities: list[RecordedActivityRead] = []
     fuelings: list[RaceFuelingRead] = []
+
+
+class RaceListResponse(BaseModel):
+    """`GET /races` envelope. Offset pagination over cursor: a race timeline is a
+    bounded, slow-growing per-user collection (dozens, not millions), so
+    offset's O(offset) cost is irrelevant, and `total` lets the UI render page
+    numbers without a second round trip."""
+
+    items: list[RaceListItem]
+    total: int
+    limit: int
+    offset: int
