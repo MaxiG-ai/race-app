@@ -30,6 +30,7 @@ polished. This is a personal tool, not a showcase.
 | Gear | Tracked per segment (M6.5); auto-detected from sensor serials, shoes manual |
 | Duplicate recordings | Kept, one marked `is_primary` per segment |
 | v1 scope | M0–M7; Strava deferred |
+| Fixtures | Real unanonymized race data — **repo must stay private** (see fixtures README) |
 
 ---
 
@@ -305,8 +306,15 @@ raw_data          jsonb
 
 ### FIT files (primary)
 
-Verified against three real multisport exports in `backend/tests/fixtures/` — two Apple
-Watch, one Garmin. The vendor split matters more than any single file's quirks.
+Verified against five real files in `backend/tests/fixtures/` — three multisport exports
+(two Apple Watch, one Garmin), one single-sport Edge 540 recording and one Strava
+re-export. The vendor split matters more than any single file's quirks.
+
+These fixtures are deliberately **not** anonymized: the sensor serials are what gear
+detection is tested against, and the GPS tracks are what map rendering is tested against.
+That is a decision to keep the repository private — see
+`backend/tests/fixtures/README.md`, which records what would have to happen before it
+could ever be published.
 
 | | Apple `2026-07-11` | Apple `2026-08-09` | Garmin `2024-08-03` |
 |---|---|---|---|
