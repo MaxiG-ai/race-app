@@ -1,0 +1,98 @@
+# Single-VPS production stack (PLAN.md §8): four services, one network.
+# Config is twelve-factor — everything below reads from `.env` (gitignored;
+# see `.env.example` for the documented variables).
+#
+# Deploy: git pull && docker compose -f docker-compose.prod.yml up -d --build
+# Do NOT `docker compose up` this file in a throwaway environment without a
+# real DOMAIN — Caddy will try (and fail) to get a real Let's Encrypt cert.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/srv/frontend:ro
+      # Named volumes (not the container FS) so issued certs / OCSP staples
+      # survive a `docker compose up -d --build caddy`.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_started
+      # The frontend service is build-only and exits 0 once it has synced
+      # dist/ onto frontend_dist (see frontend/Dockerfile) — wait for that
+      # sync to actually finish before Caddy starts serving it.
+      frontend:
+        condition: service_completed_successfully
+    networks:
+      - race-app
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # §8: original FIT uploads are retained verbatim, keyed by import id, so
+      # the corpus can be re-imported wholesale when the parser improves.
+      - uploads:/app/var/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - race-app
+    # Deliberately no `ports:` — only Caddy (on the compose network) reaches
+    # this service (§8).
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-race}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-race}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-race} -d ${POSTGRES_DB:-race}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - race-app
+    # Never publishes a host port (§8) — reachable only on the compose network.
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    # Build-only: syncs dist/ onto frontend_dist and exits. "Exited (0)" here
+    # is the success state, not a crash — see frontend/Dockerfile. Re-run with
+    # `docker compose -f docker-compose.prod.yml up -d --build frontend` to
+    # ship a frontend-only change; do not expect this container to stay up.
+    restart: "no"
+    volumes:
+      - frontend_dist:/shared
+    networks:
+      - race-app
+
+networks:
+  race-app:
+
+volumes:
+  pgdata:
+  uploads:
+  frontend_dist:
+  caddy_data:
+  caddy_config:
