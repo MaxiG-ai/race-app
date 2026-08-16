@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { logout, useInvalidateCurrentUser } from '@/api/auth'
 
 const NAV = [
   { to: '/', label: 'Timeline', end: true },
@@ -7,6 +8,15 @@ const NAV = [
 ]
 
 export function AppLayout() {
+  const navigate = useNavigate()
+  const invalidateCurrentUser = useInvalidateCurrentUser()
+
+  const handleLogout = async () => {
+    await logout()
+    await invalidateCurrentUser()
+    navigate('/login', { replace: true })
+  }
+
   return (
     <div className="min-h-full">
       <header className="border-b border-hairline">
@@ -26,6 +36,13 @@ export function AppLayout() {
               </NavLink>
             ))}
           </nav>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="ml-auto text-sm text-ink/50 transition-colors hover:text-ink"
+          >
+            Log out
+          </button>
         </div>
       </header>
       <main className="mx-auto max-w-3xl px-6 py-8">

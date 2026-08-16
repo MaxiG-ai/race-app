@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.routers import auth as auth_router
 
 app = FastAPI(title="Triathlon Racing History", version="0.1.0")
 
@@ -21,4 +22,6 @@ def health() -> dict[str, str]:
 
 # Routers are registered here as milestones land. Every data router carries the
 # `current_user` dependency at router level (§4 Auth), so a new endpoint is
-# authenticated by default rather than by remembering to add it.
+# authenticated by default rather than by remembering to add it. `auth` is the
+# deliberate exception — see app/routers/__init__.py and app/routers/auth.py.
+app.include_router(auth_router.router, prefix="/api")
