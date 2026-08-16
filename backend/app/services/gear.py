@@ -98,6 +98,12 @@ def _attach_gear(
     return row
 
 
+def _activity_owner_id(db: Session, activity: RecordedActivity) -> int:
+    """The user who owns an activity, reached through its race — activities carry no
+    `user_id` of their own (§4 Tenancy: ownership inherits through `race_id`)."""
+    return db.query(Race.user_id).filter(Race.id == activity.race_id).scalar()
+
+
 def resolve_gear_for_activity(
     db: Session,
     activity: RecordedActivity,
@@ -123,13 +129,21 @@ def resolve_gear_for_activity(
     infos = _device_infos_payload(parsed_devices)
     _record_device_infos(activity, infos)
 
+    # Serial lookup is scoped to the activity's owner (§4 Tenancy). Serials are only
+    # *practically* unique — two athletes can hold the same manufacturer/serial pair,
+    # and an unscoped match would attach a stranger's Gear to this activity, then
+    # count this ride's distance towards their mileage.
+    owner_id = _activity_owner_id(db, activity)
+
     touched: list[ActivityGear] = []
     for device in parsed_devices:
         if device.manufacturer is None or device.serial_number is None:
             continue
         gear_device = (
             db.query(GearDevice)
+            .join(Gear, Gear.id == GearDevice.gear_id)
             .filter(
+                Gear.user_id == owner_id,
                 GearDevice.manufacturer == device.manufacturer,
                 GearDevice.serial_number == str(device.serial_number),
             )
@@ -184,7 +198,16 @@ def unknown_devices(db: Session, user_id: int) -> list[dict[str, Any]]:
     `favero_electronics 1753485582`, with how many activities carry it and when
     it was first seen, enough context for the user to recognise it.
     """
-    known = {(gd.manufacturer, gd.serial_number) for gd in db.query(GearDevice).all()}
+    # Only *this user's* mappings count as known (§4 Tenancy). Reading every user's
+    # GearDevice rows would let a stranger's mapping suppress this user's prompt, and
+    # a serial that never gets prompted never gets named — so auto-detection would
+    # silently never fire for that device.
+    known = {
+        (gd.manufacturer, gd.serial_number)
+        for gd in db.query(GearDevice)
+        .join(Gear, Gear.id == GearDevice.gear_id)
+        .filter(Gear.user_id == user_id)
+    }
     activities = (
         db.query(RecordedActivity)
         .join(Race, Race.id == RecordedActivity.race_id)

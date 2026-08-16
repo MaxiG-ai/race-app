@@ -84,12 +84,23 @@ class TrackPoint(BaseModel):
     timestamp: datetime
 
 
+class TrackBoundsRead(BaseModel):
+    """A segment's bounding box, for map viewport fitting without the frontend
+    having to scan `points` itself. Mirrors `RecordedActivity.bounds_*`."""
+
+    n_lat: float
+    s_lat: float
+    e_lng: float
+    w_lng: float
+
+
 class SegmentTrack(BaseModel):
     """One segment's polyline, as returned by `GET /races/{id}/track`. This is the
     only place `gps_track` is ever serialised."""
 
     recorded_activity_id: int
     segment: Segment
+    bounds: TrackBoundsRead | None = None
     points: list[TrackPoint]
 
 

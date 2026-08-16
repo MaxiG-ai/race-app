@@ -8,6 +8,7 @@ from app.schemas.activity import (
     RecordedActivityRead,
     RecordedActivityUpdate,
     SegmentTrack,
+    TrackBoundsRead,
     TrackPoint,
 )
 from app.schemas.fueling import (
@@ -33,6 +34,7 @@ from app.schemas.race import (
     RaceCreate,
     RaceDetail,
     RaceListItem,
+    RaceListResponse,
     RaceRead,
     RaceUpdate,
     SegmentSummary,
@@ -41,8 +43,11 @@ from app.schemas.stats import StatsSummary
 from app.schemas.upload import (
     RaceAttachRequest,
     RaceGroupRequest,
+    UploadBatchResponse,
     UploadGroupProposal,
     UploadRead,
+    UploadResult,
+    UploadTrayResponse,
 )
 from app.schemas.user import UserRead
 
@@ -67,6 +72,7 @@ __all__ = [
     "RaceFuelingUpsertItem",
     "RaceGroupRequest",
     "RaceListItem",
+    "RaceListResponse",
     "RaceRead",
     "RaceTrackResponse",
     "RaceUpdate",
@@ -75,9 +81,13 @@ __all__ = [
     "SegmentSummary",
     "SegmentTrack",
     "StatsSummary",
+    "TrackBoundsRead",
     "TrackPoint",
     "UnknownDeviceRead",
+    "UploadBatchResponse",
     "UploadGroupProposal",
     "UploadRead",
+    "UploadResult",
+    "UploadTrayResponse",
     "UserRead",
 ]
