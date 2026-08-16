@@ -154,3 +154,52 @@ def test_another_users_mapping_never_claims_this_users_activity(
     assert (FAVERO_MANUFACTURER, FAVERO_SERIAL) in seen, (
         "a stranger's mapping suppressed this user's prompt to name their own sensor"
     )
+
+
+def test_two_users_can_each_map_the_same_serial(client: TestClient, db: Session) -> None:
+    """§4 Tenancy. Serials are only practically unique, so uniqueness is scoped to
+    the gear item rather than global — otherwise whoever mapped a serial first would
+    permanently block every other account from naming their own identical sensor,
+    and gear detection could never work for them."""
+    stranger = _make_user(db, "stranger@example.com")
+    their_bike = Gear(user_id=stranger.id, kind=GearKind.BIKE, name="Their bike")
+    db.add(their_bike)
+    db.flush()
+    db.add(
+        GearDevice(
+            gear_id=their_bike.id,
+            manufacturer=FAVERO_MANUFACTURER,
+            serial_number=FAVERO_SERIAL,
+        )
+    )
+    db.commit()
+
+    user = _make_user(db, "athlete@example.com")
+    my_bike = Gear(user_id=user.id, kind=GearKind.BIKE, name="My bike")
+    db.add(my_bike)
+    db.commit()
+
+    _login(client, "athlete@example.com")
+    response = client.post(
+        f"/api/gear/{my_bike.id}/devices",
+        json={"manufacturer": FAVERO_MANUFACTURER, "serial_number": FAVERO_SERIAL},
+    )
+    assert response.status_code == 201, response.text
+    assert "backfilled_activity_count" in response.json()
+
+
+def test_mapping_the_same_serial_twice_for_one_user_is_refused(
+    client: TestClient, db: Session
+) -> None:
+    """Within one account the same serial must not name two different items —
+    that is a genuine conflict, unlike the cross-account case above."""
+    user = _make_user(db, "athlete@example.com")
+    first = Gear(user_id=user.id, kind=GearKind.BIKE, name="Race bike")
+    second = Gear(user_id=user.id, kind=GearKind.BIKE, name="Training bike")
+    db.add_all([first, second])
+    db.commit()
+
+    _login(client, "athlete@example.com")
+    payload = {"manufacturer": FAVERO_MANUFACTURER, "serial_number": FAVERO_SERIAL}
+    assert client.post(f"/api/gear/{first.id}/devices", json=payload).status_code == 201
+    assert client.post(f"/api/gear/{second.id}/devices", json=payload).status_code == 409

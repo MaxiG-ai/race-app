@@ -573,6 +573,27 @@ export interface components {
             /** Label */
             label?: string | null;
         };
+        /**
+         * GearDeviceMapped
+         * @description The `POST /gear/{id}/devices` response. Carries `backfilled_activity_count`
+         *     because the backfill *is* the payoff of naming a device (§3 Gear detection): the
+         *     user names a serial once and every past import carrying it resolves. Silently
+         *     updating history would leave them unable to tell whether it worked.
+         */
+        GearDeviceMapped: {
+            /** Id */
+            id: number;
+            /** Gear Id */
+            gear_id: number;
+            /** Manufacturer */
+            manufacturer: string;
+            /** Serial Number */
+            serial_number: string;
+            /** Label */
+            label: string | null;
+            /** Backfilled Activity Count */
+            backfilled_activity_count: number;
+        };
         /** GearDeviceRead */
         GearDeviceRead: {
             /** Id */
@@ -2348,7 +2369,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GearDeviceRead"];
+                    "application/json": components["schemas"]["GearDeviceMapped"];
                 };
             };
             /** @description Validation Error */

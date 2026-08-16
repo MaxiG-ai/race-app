@@ -18,6 +18,7 @@ from app.models import Gear, GearDevice, User
 from app.schemas.gear import (
     GearCreate,
     GearDeviceCreate,
+    GearDeviceMapped,
     GearDeviceRead,
     GearListItem,
     GearRead,
@@ -110,23 +111,28 @@ def list_unknown_devices(
 
 
 @router.post(
-    "/{gear_id}/devices", response_model=GearDeviceRead, status_code=status.HTTP_201_CREATED
+    "/{gear_id}/devices", response_model=GearDeviceMapped, status_code=status.HTTP_201_CREATED
 )
 def create_gear_device(
     gear_id: int,
     payload: GearDeviceCreate,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(current_user)],
-) -> GearDevice:
+) -> GearDeviceMapped:
     """Maps a serial to `gear_id` and backfills every past activity (owned by
     this user) that already recorded it (§3 step 3's payoff) — this is what lets
     the user name a device once and have both past and future imports resolve
     it."""
     gear = _get_owned_gear(db, user, gear_id)
 
+    # Scoped to this user (§4 Tenancy). Serials are only practically unique, so an
+    # unscoped check would both refuse a legitimate mapping and confirm that another
+    # account has already claimed that serial.
     conflict = (
         db.query(GearDevice)
+        .join(Gear, Gear.id == GearDevice.gear_id)
         .filter(
+            Gear.user_id == user.id,
             GearDevice.manufacturer == payload.manufacturer,
             GearDevice.serial_number == payload.serial_number,
         )
@@ -147,8 +153,13 @@ def create_gear_device(
     db.add(device)
     db.flush()
 
-    backfill_gear_for_device(db, user.id, device)
+    backfilled = backfill_gear_for_device(db, user.id, device)
 
     db.commit()
     db.refresh(device)
-    return device
+    return GearDeviceMapped.model_validate(
+        {
+            **GearDeviceRead.model_validate(device).model_dump(),
+            "backfilled_activity_count": backfilled,
+        }
+    )

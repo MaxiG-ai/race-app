@@ -49,8 +49,18 @@ class GearDevice(Base):
 
     __tablename__ = "gear_devices"
     __table_args__ = (
+        # Scoped to the gear item, NOT global (§4 Tenancy). A serial is only
+        # *practically* unique — two athletes can own hardware with the same
+        # manufacturer/serial pair, and a global constraint would let whoever
+        # mapped it first permanently block the other from naming their own
+        # sensor. Uniqueness *within one user* (the same serial mapped to two of
+        # their gear items) is enforced in the router, which has the owner to
+        # filter by; this constraint stops the exact-duplicate row.
         UniqueConstraint(
-            "manufacturer", "serial_number", name="uq_gear_device_manufacturer_serial"
+            "gear_id",
+            "manufacturer",
+            "serial_number",
+            name="uq_gear_device_gear_manufacturer_serial",
         ),
     )
 

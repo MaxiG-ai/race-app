@@ -1548,7 +1548,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GearDeviceRead"
+                  "$ref": "#/components/schemas/GearDeviceMapped"
                 }
               }
             }
@@ -1846,6 +1846,52 @@
         ],
         "title": "GearDeviceCreate",
         "description": "`POST /gear/{id}/devices` \u2014 maps a serial to a gear item; backfills past\nactivities carrying that serial (\u00a73 Gear detection)."
+      },
+      "GearDeviceMapped": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "gear_id": {
+            "type": "integer",
+            "title": "Gear Id"
+          },
+          "manufacturer": {
+            "type": "string",
+            "title": "Manufacturer"
+          },
+          "serial_number": {
+            "type": "string",
+            "title": "Serial Number"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "backfilled_activity_count": {
+            "type": "integer",
+            "title": "Backfilled Activity Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "gear_id",
+          "manufacturer",
+          "serial_number",
+          "label",
+          "backfilled_activity_count"
+        ],
+        "title": "GearDeviceMapped",
+        "description": "The `POST /gear/{id}/devices` response. Carries `backfilled_activity_count`\nbecause the backfill *is* the payoff of naming a device (\u00a73 Gear detection): the\nuser names a serial once and every past import carrying it resolves. Silently\nupdating history would leave them unable to tell whether it worked."
       },
       "GearDeviceRead": {
         "properties": {

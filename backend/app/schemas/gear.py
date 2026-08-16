@@ -15,6 +15,15 @@ class GearDeviceRead(BaseModel):
     label: str | None
 
 
+class GearDeviceMapped(GearDeviceRead):
+    """The `POST /gear/{id}/devices` response. Carries `backfilled_activity_count`
+    because the backfill *is* the payoff of naming a device (§3 Gear detection): the
+    user names a serial once and every past import carrying it resolves. Silently
+    updating history would leave them unable to tell whether it worked."""
+
+    backfilled_activity_count: int
+
+
 class GearDeviceCreate(BaseModel):
     """`POST /gear/{id}/devices` — maps a serial to a gear item; backfills past
     activities carrying that serial (§3 Gear detection)."""
