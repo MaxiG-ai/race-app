@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.19.1",
     "argon2-cffi>=25.1.0",
+    "email-validator>=2.3.0",
     "fastapi>=0.115",
     "fitdecode>=0.11.0",
     "gunicorn>=26.0.0",
@@ -32,6 +33,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# CLAUDE.md/PLAN.md call for `str, enum.Enum` (not `enum.StrEnum`) so members
+# serialise as plain strings through both SQLAlchemy and Pydantic v2.
+"app/models/enums.py" = ["UP042"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
