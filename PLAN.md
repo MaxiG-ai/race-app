@@ -405,7 +405,9 @@ including Garmin's undecoded proprietary messages.
    rejected with a clear error, not silently half-imported.
 4. Bucket `record` points into sessions using **half-open `[start, end)` windows** —
    sessions share a boundary sub-second and inclusive matching double-counts (§3.4).
-   Assert every record lands in exactly one session; both fixtures satisfy this.
+   Records landing in no session are dropped and counted, not fatal — the Garmin fixture
+   has one such orphan in the 1.1 s gap between bike end and T2 start (§3 Traps 4). A
+   record matching more than one window *is* a bug and fails the import.
 5. If no `race_id` given, create a draft `Race`: date from the first session's start time
    **converted to the start location's local timezone** (§3.11), location from the
    bounding-box centroid, name and `race_type` left for the user.
@@ -807,7 +809,7 @@ information, not a generic numbered-sequence marker.
 | M0 | Scaffold | Repo layout, `docker-compose` with Postgres, FastAPI hello-world, Vite app, lint/format config |
 | M1 | Data model | SQLAlchemy models, Alembic initial migration, Pydantic schemas |
 | M1.5 | Auth | `User` model, argon2 hashing, JWT cookie sessions, `current_user` dependency, seed-user CLI, login page + auth-gated routing |
-| M2 | FIT import | `fit_import.py` + `POST /uploads`, tested against all three fixtures — asserting the §3 traps: session totals over lap sums, half-open bucketing, orphan records tolerated, device-dependent power, elapsed vs moving time, local race date |
+| M2 | FIT import | `fit_import.py` + `POST /uploads`, tested against all five fixtures — asserting the §3 traps: session totals over lap sums, half-open bucketing, orphan records tolerated, device-dependent power, elapsed vs moving time, local race date |
 | M2.5 | Grouping | `Upload` staging, ungrouped tray, same-day proposals, `POST /races/group`, derived transitions — the path Strava will reuse |
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
