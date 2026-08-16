@@ -375,9 +375,16 @@ from the sport alone.**
    only where data exists.
 3. **Consecutive session windows overlap sub-second** (one ends 11:51:42.054, the next
    starts 11:51:42) — inclusive bucketing double-counts. Use half-open `[start, end)`.
+   *(Refined in M2: half-open alone is not enough. Each session's end must also be
+   clamped to the next session's start, or the boundary record still matches two
+   windows — the overlap is between one session's derived end and the next's recorded
+   start, which half-open bucketing on its own does not resolve. The clamp is a no-op
+   wherever a real gap exists, so Trap 4's orphans survive it.)*
 4. **Records can fall outside every session window.** The Garmin file has one orphan at
    12:39:07, in the 1.1 s gap between bike end and T2 start. Assert-every-record-lands
-   would reject a valid file; orphans are dropped and counted, not fatal.
+   would reject a valid file; orphans are dropped and counted, not fatal. *(Verified in
+   M2: the Strava re-export has one too — a trailing run record a fraction of a second
+   past the run's own computed end. Orphans are ordinary, not a Garmin peculiarity.)*
 5. **Store elapsed *and* moving time.** Garmin's differ (pauses exist), Apple's don't. A
    single `total_time` column silently picks one and loses the other.
 6. **Transitions are real segments but poorly recorded.** T1 ranges 105–552 m; the Apple
@@ -390,7 +397,10 @@ from the sport alone.**
    source for `Race.weather_temp_c`.
 9. **Field names are the `enhanced_` variants** (`enhanced_speed`, `enhanced_altitude`).
    Altitude is missing from ~20 % of records on both vendors, so elevation profiles need
-   gap handling.
+   gap handling. *(Corrected in M2: the gap is not scattered. Altitude is 100 % absent
+   during the open-water swim and 100 % present everywhere else, on every fixture and
+   both vendors — the ~20 % is just the swim's share of the record count. So it is one
+   contiguous hole per race, and only the swim needs the gap handling.)*
 10. **Developer fields are Apple-only and sparse** — `AVG METs` is declared but never
     populated, `RPE ESTIMATED` appears in one file of two, and `SESSION WEATHER HUMIDITY`
     is never populated at all. Weather is API-only in practice.
