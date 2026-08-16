@@ -25,7 +25,7 @@ polished. This is a personal tool, not a showcase.
 | Auth | Real login with user accounts |
 | Tenancy | Multi-tenant by design, single-tenant in operation — you first, others later |
 | FIT upload | Multisport files auto-create a draft race; single-sport files stage for manual grouping |
-| Carbs | Per-segment (bike / run) |
+| Fueling | `RaceFueling` table, one row per segment: carbs, products used, notes |
 | Grouping | In v1 (M2.5); synthesized transitions flagged `is_derived` |
 | Gear | Tracked per segment (M6.5); auto-detected from sensor serials, shoes manual |
 | Duplicate recordings | Kept, one marked `is_primary` per segment |
@@ -66,9 +66,10 @@ race-app/
       main.py            # FastAPI app, router registration, CORS
       config.py          # pydantic-settings, env-driven
       db.py              # engine, session dependency
-      models/            # SQLAlchemy ORM: race, official_result, recorded_activity, lap_split
+      models/            # SQLAlchemy ORM: user, race, race_fueling, official_result,
+                         # upload, recorded_activity, lap_split, gear
       schemas/           # Pydantic request/response models
-      routers/           # auth, races, imports, stats, weather
+      routers/           # auth, races, fueling, uploads, gear, stats, weather
       auth/              # password hashing, JWT issue/verify, current_user dependency
       services/
         fit_import.py    # fitdecode parsing → normalized dicts (vendor-agnostic)
@@ -128,17 +129,30 @@ race_type             enum: sprint, olympic, half_iron, full_iron, custom
 weather_temp_c        nullable, from weather API enrichment
 weather_humidity_pct  nullable, from weather API (FIT humidity field is never populated)
 weather_conditions    nullable, e.g. "clear", "overcast"
-carbs_bike_g          nullable, manual entry (fueling isn't in FIT data)
-carbs_run_g           nullable, manual entry
 notes                 nullable, free text
 created_at / updated_at
 ```
 
-Carbs live on `Race` as two nullable columns rather than on `RecordedActivity`, because
-fueling is entered by hand and must be recordable for a race that has no FIT import yet.
-Swim is omitted deliberately — nobody fuels mid-swim. Total carbs is derived on read, not
-stored. If fueling ever needs finer structure (per-lap, or gel-by-gel), it graduates to
-its own `RaceFueling` table; two columns don't justify one now.
+### `RaceFueling` (many:1 with Race — one row per fuelled segment)
+What was consumed during a race. Hangs off `Race` rather than `RecordedActivity` because
+fueling is entered by hand and must be recordable for a race with no import yet.
+```
+id (PK)
+race_id (FK, indexed)
+segment       enum: swim, t1, bike, t2, run — the UI offers bike and run by default,
+              but the column takes any segment rather than blocking "ate a gel in T2"
+carbs_g       nullable
+products      jsonb — [{name, quantity}], e.g. [{"name": "Maurten 160", "quantity": 2}]
+notes         text, nullable — free text: how it sat, what ran out, what to change
+created_at / updated_at
+unique (race_id, segment)
+```
+
+Total carbs is derived by summing rows, not stored. `products` is JSONB rather than a
+normalised catalogue: v1 needs to *record* what was used, and free-form entry does that
+without a product table and its picker. Promoting products to their own table is the
+upgrade path if per-product analysis ("did I run better on X?") becomes a real question —
+see §9.
 
 ### `Upload`
 Staging row for every file or Strava activity, created *before* it belongs to a race.
@@ -314,7 +328,8 @@ Watch, one Garmin. The vendor split matters more than any single file's quirks.
 - **`session`** carries `total_ascent` and an `nec`/`swc` bounding box, enough to fit the
   map viewport without touching the point stream.
 - **Runs auto-lap at 1 km, bikes at 5 km.** Consistent across all three files.
-- **No nutrition or carbs data anywhere**, on either vendor. Carbs stays manual entry.
+- **No nutrition or carbs data anywhere**, on either vendor. Fueling stays manual entry
+  (`RaceFueling`, §2).
 - **`avg_speed` is unreliable on laps** — absent on every Garmin lap and on Apple swim
   laps. Derive pace from distance ÷ time rather than reading the field.
 - **Timestamps are UTC.** Apple filenames encode *local* time (`...131906` against a
@@ -535,7 +550,7 @@ Serials are stable across rides, so gear resolves itself after being named once:
 **Shoes cannot be detected this way.** Running shoes carry no sensor (barring a footpod),
 and the Apple Watch files list only the watch itself — no paired devices at all. So the
 run segment's gear is manual, with the last-used pair offered as the default. This is the
-same shape as carbs: the data isn't in the file, so the UI has to ask.
+same shape as fueling: the data isn't in the file, so the UI has to ask.
 
 The payoff is mileage per item — shoe rotation and drivetrain wear — computed from
 `activity_gear`, which is why gear attaches to `RecordedActivity` rather than to `Race`.
@@ -630,7 +645,8 @@ All under `/api`. Response shapes drive the generated TS types.
 | `GET` | `/races` | Timeline list — paginated, newest first. Lightweight preview payload: name, date, type, badges, official + recorded segment totals for the `SegmentBar`. **No `gps_track`.** |
 | `GET` | `/races/{id}` | Full detail: race, official result, recorded activities (without `gps_track`), lap splits. |
 | `POST` | `/races` | Create a race manually. |
-| `PATCH` | `/races/{id}` | Edit race metadata, incl. per-segment carbs, location, notes. |
+| `PATCH` | `/races/{id}` | Edit race metadata: name, type, location, notes. |
+| `PUT` | `/races/{id}/fueling` | Upsert the fueling rows for a race (carbs, products, notes per segment). |
 | `DELETE` | `/races/{id}` | Delete race and cascade its activities/laps. |
 | `PUT` | `/races/{id}/official-result` | Upsert manually entered official times/placings. |
 | `GET` | `/races/{id}/track` | GPS polylines for the map, one per segment. Simplified by default (`?precision=`), full stream on request. Split out because it's by far the heaviest payload. |
@@ -675,7 +691,7 @@ rendering. The full stream stays in the database.
   polylines directly.
 - **Styling**: Tailwind CSS — utility classes, no bespoke CSS.
 - **Forms**: React Hook Form + Zod for the manual-entry views (official results, race
-  metadata, carbs). Kept deliberately plain.
+  metadata, fueling). Kept deliberately plain.
 
 ### Information Architecture
 
@@ -684,9 +700,9 @@ rendering. The full stream stays in the database.
 - **Timeline** (`/`) — chronological feed of races, most recent first, each entry a
   preview card.
 - **Race detail** (`/races/:id`) — official vs. recorded comparison, course map, lap
-  split chart, weather + carbs metadata.
+  split chart, weather + fueling metadata.
 - **Race edit** (`/races/:id/edit`) — manual entry: race metadata, official result
-  times/placings, carbs, per-segment gear.
+  times/placings, fueling, per-segment gear.
 - **Gear** (`/gear`) — inventory with accumulated distance, plus unmapped sensor serials
   awaiting a name.
 - **Import** (`/import`) — multi-file upload, plus the ungrouped tray where single-sport
@@ -756,7 +772,8 @@ information, not a generic numbered-sequence marker.
 | `SplitsComparison` | Official vs. recorded table, per segment incl. T1/T2, with deltas |
 | `SplitsChart` | Recharts line chart, filterable by sport. Series availability is sport-dependent (§3): run has pace/HR/power, bike has pace/HR only and just 6–8 coarse 5 km points, swim is a single lap and renders as a summary tile rather than a line. |
 | `CourseMap` | react-leaflet wrapper rendering the simplified track polylines |
-| `RaceForm` | Manual entry: race metadata + carbs |
+| `RaceForm` | Manual entry: race metadata |
+| `FuelingForm` | Per-segment carbs, product list (add/remove rows) and notes |
 | `OfficialResultForm` | Manual entry: official times and placings |
 | `FitUpload` | Drag/drop upload, multi-file, with per-file parse feedback |
 | `GroupingTray` | Ungrouped uploads with suggested groupings; select + confirm to create a race |
@@ -776,7 +793,7 @@ information, not a generic numbered-sequence marker.
 - Pacing trends per sport / distance / time (via `LapSplit`, sliced by `sport` and joined
   to `Race.race_type` / `Race.date`).
 - Weather correlation with performance (temp/humidity on `Race`, joined to pacing data).
-- Manual carbs tracking per race, split bike vs. run.
+- Manual fueling tracking per race segment: carbs, products used, free-text notes.
 - Gear per race segment, auto-detected from sensor serials where possible, with
   accumulated distance per bike and per pair of shoes.
 - Multiple recordings of the same segment from different devices, with one marked primary.
@@ -795,7 +812,7 @@ information, not a generic numbered-sequence marker.
 | M3 | Read API | `/races`, `/races/{id}`, `/laps`, `/track`, `/stats/summary`; OpenAPI type generation wired up |
 | M4 | Timeline UI | `StatStrip`, `TimelineSpine`, `RaceCard`, `SegmentBar`, design tokens |
 | M5 | Detail UI | `SplitsComparison`, `SplitsChart`, `CourseMap` |
-| M6 | Manual entry | Race form, official result form, carbs; upload page |
+| M6 | Manual entry | Race form, official result form, `RaceFueling` form; upload page |
 | M6.5 | Gear | `Gear`/`GearDevice`, serial auto-detection with backfill, manual shoe assignment, distance-per-item |
 | M7 | Weather | Open-Meteo enrichment at import + refresh endpoint |
 | M7.5 | Deploy | Compose stack, Caddy + TLS, migrations on boot, backups (see §8) |
@@ -851,6 +868,9 @@ Carried forward from both source plans, plus seams that surfaced while merging t
   but no UI is specified for them. Post-v1.
 - **Opening to other users** — registration, password reset, admin surface and quotas
   are all deferred (§4 Tenancy); the data model is ready for them, the product isn't.
+- **Normalised fuel products** — `RaceFueling.products` is free-form JSONB. A `Product`
+  table with a picker would enable "how do I race on Maurten vs. SIS" comparisons, at the
+  cost of a catalogue to maintain. Deferred until the free-text data shows it's worth it.
 - **Gear component-level tracking** — chains, cassettes and tyres as sub-items of a bike,
   each with their own mileage and service intervals. Decided against for v1: it needs a
   parent/child gear tree and swap history. The `Gear` shape accommodates it later.
