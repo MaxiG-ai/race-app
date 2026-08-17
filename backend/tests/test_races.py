@@ -248,9 +248,11 @@ def test_create_race(client: TestClient, db: Session) -> None:
     assert body["race_type"] == "full_iron"
 
 
-def test_patch_race_updates_metadata_and_leaves_weather_untouched(
-    client: TestClient, db: Session
+def test_patch_race_leaves_weather_untouched_when_no_weather_input_changed(
+    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Date and location are the only inputs to the lookup, so editing anything
+    else must not spend a request re-fetching identical conditions."""
     user = factories.make_user(db)
     _login(client, user.email)
     race = factories.make_race(db, owner=user, location_lat=49.0, location_lng=8.0)
@@ -259,19 +261,73 @@ def test_patch_race_updates_metadata_and_leaves_weather_untouched(
     db.add(race)
     db.commit()
 
+    def _fail_fetch(*args, **kwargs):
+        raise AssertionError("weather must not be re-fetched for a name/notes edit")
+
+    monkeypatch.setattr("app.routers.races.fetch_weather", _fail_fetch)
+
     response = client.patch(
-        f"/api/races/{race.id}",
-        json={"location_lat": 50.0, "location_lng": 9.0, "name": "Corrected Name"},
+        f"/api/races/{race.id}", json={"name": "Corrected Name", "notes": "windy"}
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "Corrected Name"
-    assert body["location_lat"] == 50.0
-    # Editing location does not auto-refetch weather — it's left as-is (now
-    # stale) until /weather/refresh is called explicitly.
     assert body["weather_temp_c"] == 21.5
     assert body["weather_conditions"] == "clear"
+
+
+def test_patch_race_refetches_weather_when_the_date_changes(
+    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Correcting the date must bring the conditions with it. Leaving the old
+    values attached would keep presenting the wrong day's weather as fact."""
+    from app.services.weather import WeatherResult
+
+    user = factories.make_user(db)
+    _login(client, user.email)
+    race = factories.make_race(db, owner=user, location_lat=49.0, location_lng=8.0)
+    race.weather_temp_c = 21.5
+    race.weather_conditions = "clear"
+    db.add(race)
+    db.commit()
+
+    seen: dict[str, object] = {}
+
+    def _fake_fetch(lat, lng, start_at_utc, **kwargs):
+        seen["anchor"] = start_at_utc
+        return WeatherResult(temp_c=4.0, humidity_pct=88.0, conditions="light rain")
+
+    monkeypatch.setattr("app.routers.races.fetch_weather", _fake_fetch)
+
+    response = client.patch(f"/api/races/{race.id}", json={"date": "2026-01-11"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["weather_temp_c"] == 4.0
+    assert body["weather_conditions"] == "light rain"
+    # Anchored on the newly entered date, resolved through the race location's
+    # timezone (Karlsruhe in January is UTC+1, so 09:00 local is 08:00 UTC).
+    anchor = seen["anchor"]
+    assert anchor.date().isoformat() == "2026-01-11"
+    assert anchor.hour == 8
+
+
+def test_patch_race_location_edit_survives_a_weather_lookup_failure(
+    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Weather is enrichment, never a precondition (§3) — a dead archive must cost
+    the conditions, not the edit."""
+    user = factories.make_user(db)
+    _login(client, user.email)
+    race = factories.make_race(db, owner=user, location_lat=49.0, location_lng=8.0)
+
+    monkeypatch.setattr("app.routers.races.fetch_weather", lambda *a, **k: None)
+
+    response = client.patch(f"/api/races/{race.id}", json={"location_lat": 50.0})
+
+    assert response.status_code == 200
+    assert response.json()["location_lat"] == 50.0
 
 
 def test_patch_race_404_for_another_users_race(client: TestClient, db: Session) -> None:
@@ -581,14 +637,66 @@ def test_weather_refresh_400_without_location(client: TestClient, db: Session) -
     assert response.status_code == 400
 
 
-def test_weather_refresh_400_without_recorded_activity(client: TestClient, db: Session) -> None:
+def test_weather_refresh_uses_the_entered_date_without_any_recording(
+    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manually entered race has no recording to anchor to. The entered date is
+    the anchor, so weather works for a race that was never imported at all."""
+    from app.services.weather import WeatherResult
+
     user = factories.make_user(db)
     _login(client, user.email)
-    race = factories.make_race(db, owner=user, location_lat=49.05, location_lng=8.40)
+    race = factories.make_race(
+        db, owner=user, location_lat=49.05, location_lng=8.40, race_date=date(2026, 7, 11)
+    )
+
+    seen: dict[str, object] = {}
+
+    def _fake_fetch(lat, lng, start_at_utc, **kwargs):
+        seen["anchor"] = start_at_utc
+        return WeatherResult(temp_c=26.7, humidity_pct=55.0, conditions="partly cloudy")
+
+    monkeypatch.setattr("app.routers.races.fetch_weather", _fake_fetch)
 
     response = client.post(f"/api/races/{race.id}/weather/refresh")
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["weather_temp_c"] == 26.7
+    anchor = seen["anchor"]
+    assert anchor.date().isoformat() == "2026-07-11"
+    # CEST is UTC+2 in July, so the 09:00 local anchor lands at 07:00 UTC — proof
+    # the zone comes from the race location, not the server's.
+    assert anchor.hour == 7
+
+
+def test_weather_refresh_ignores_a_recording_from_a_different_date(
+    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recording is the precise anchor only while it agrees with the entered
+    date. Once the user corrects a wrong date, following the recording would
+    silently ignore the correction."""
+    from app.services.weather import WeatherResult
+
+    user = factories.make_user(db)
+    _login(client, user.email)
+    race = factories.make_race(
+        db, owner=user, location_lat=49.05, location_lng=8.40, race_date=date(2026, 7, 11)
+    )
+    factories.make_primary_activities(db, race=race)
+    race.date = date(2026, 8, 9)
+    db.add(race)
+    db.commit()
+
+    seen: dict[str, object] = {}
+
+    def _fake_fetch(lat, lng, start_at_utc, **kwargs):
+        seen["anchor"] = start_at_utc
+        return WeatherResult(temp_c=19.0, humidity_pct=60.0, conditions="overcast")
+
+    monkeypatch.setattr("app.routers.races.fetch_weather", _fake_fetch)
+
+    assert client.post(f"/api/races/{race.id}/weather/refresh").status_code == 200
+    assert seen["anchor"].date().isoformat() == "2026-08-09"
 
 
 def test_weather_refresh_404_for_another_users_race(client: TestClient, db: Session) -> None:

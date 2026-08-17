@@ -40,12 +40,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.config import settings
+from app.services.tz import timezone_at
 
 if TYPE_CHECKING:
     from app.models.race import Race
@@ -237,6 +239,38 @@ def fetch_weather(
     finally:
         if owns_client:
             http_client.close()
+
+
+# A representative time of day for a race whose only time information is a date.
+# Age-group triathlons start in the morning and are over within a few hours, so a
+# mid-morning local hour is the closest single sample to "conditions during the
+# race". It is a stand-in for an unknown start time, not a claim about one.
+DEFAULT_LOCAL_RACE_HOUR = 9
+
+
+def utc_anchor_for_local_date(
+    lat: float, lng: float, race_date: date, *, local_hour: int = DEFAULT_LOCAL_RACE_HOUR
+) -> datetime:
+    """Turn a race's *entered* local date into the timezone-aware UTC datetime the
+    archive lookup needs.
+
+    `Race.date` is a plain local date (§2 Conventions) with no time and no zone, but
+    the archive is queried in UTC hourly buckets. Resolving the zone from the race
+    location rather than the server's is what keeps an early start from landing on
+    the previous day — the same trap §3 flags for Apple's local-time filenames.
+
+    Falls back to treating the local hour as UTC when the coordinates resolve to no
+    timezone (mid-ocean, or a lookup failure). That is at most a few hours off, which
+    is a far better answer than refusing to report weather at all.
+    """
+    naive = datetime(race_date.year, race_date.month, race_date.day, local_hour)
+    tz_name = timezone_at(lat, lng)
+    if tz_name is None:
+        logger.warning(
+            "No timezone for lat=%s lng=%s; anchoring weather lookup in UTC instead.", lat, lng
+        )
+        return naive.replace(tzinfo=UTC)
+    return naive.replace(tzinfo=ZoneInfo(tz_name)).astimezone(UTC)
 
 
 def apply_weather_to_race(

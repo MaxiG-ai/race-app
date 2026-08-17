@@ -284,3 +284,43 @@ def test_apply_weather_partial_result_only_updates_present_fields():
     assert race.weather_temp_c == 5.0
     assert race.weather_humidity_pct == 50.0
     assert race.weather_conditions == "fog"
+
+
+# --- utc_anchor_for_local_date ---------------------------------------------- #
+
+
+def test_anchor_resolves_the_local_hour_through_the_race_location_timezone() -> None:
+    """`Race.date` is a plain local date (§2). Resolving it through the *race's*
+    timezone rather than the server's is what stops an early start landing on the
+    wrong day — the same trap §3 flags for Apple's local-time filenames."""
+    from datetime import date
+
+    from app.services.weather import DEFAULT_LOCAL_RACE_HOUR, utc_anchor_for_local_date
+
+    summer = utc_anchor_for_local_date(49.0, 8.4, date(2026, 7, 11))
+    winter = utc_anchor_for_local_date(49.0, 8.4, date(2026, 1, 11))
+
+    # Karlsruhe: CEST (UTC+2) in July, CET (UTC+1) in January. A fixed offset would
+    # get one of these wrong, so this pins that the zone is applied, not an offset.
+    assert summer.hour == DEFAULT_LOCAL_RACE_HOUR - 2
+    assert winter.hour == DEFAULT_LOCAL_RACE_HOUR - 1
+    assert summer.date().isoformat() == "2026-07-11"
+    assert winter.date().isoformat() == "2026-01-11"
+    assert summer.tzinfo is not None and winter.tzinfo is not None
+
+
+def test_anchor_falls_back_to_utc_when_no_timezone_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mid-ocean coordinates resolve to no zone. A few hours off is a far better
+    answer than refusing to report weather at all."""
+    from datetime import date
+
+    from app.services import weather as weather_module
+
+    monkeypatch.setattr(weather_module, "timezone_at", lambda lat, lng: None)
+    anchor = weather_module.utc_anchor_for_local_date(0.0, -140.0, date(2026, 7, 11))
+
+    assert anchor.date().isoformat() == "2026-07-11"
+    assert anchor.hour == weather_module.DEFAULT_LOCAL_RACE_HOUR
+    assert anchor.utcoffset().total_seconds() == 0

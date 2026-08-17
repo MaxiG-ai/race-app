@@ -15,6 +15,7 @@ Payload note (§4): `gps_track` never appears in `/races` or `/races/{id}` —
 from __future__ import annotations
 
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
@@ -55,7 +56,12 @@ from app.schemas.race import (
 )
 from app.services.aggregates import RACE_SEGMENT_ORDER, RaceAggregates, race_aggregates_by_id
 from app.services.geo import simplify_for_precision, track_bounds
-from app.services.weather import apply_weather_to_race, fetch_weather
+from app.services.tz import timezone_at
+from app.services.weather import (
+    apply_weather_to_race,
+    fetch_weather,
+    utc_anchor_for_local_date,
+)
 
 router = APIRouter(prefix="/races", tags=["races"], dependencies=[Depends(current_user)])
 
@@ -167,8 +173,12 @@ def get_race(race_id: int, db: DbSession, user: CurrentUser) -> RaceDetail:
 
 @router.post("", response_model=RaceRead, status_code=status.HTTP_201_CREATED)
 def create_race(payload: RaceCreate, db: DbSession, user: CurrentUser) -> RaceRead:
+    """A manually created race gets its conditions straight away when it is given a
+    location, since it has no import to enrich it and the date is already known."""
     race = Race(user_id=user.id, **payload.model_dump())
     db.add(race)
+    db.flush()
+    enrich_weather(db, race, overwrite=False)
     db.commit()
     db.refresh(race)
     return RaceRead.model_validate(race)
@@ -176,18 +186,32 @@ def create_race(payload: RaceCreate, db: DbSession, user: CurrentUser) -> RaceRe
 
 @router.patch("/{race_id}", response_model=RaceRead)
 def update_race(race_id: int, payload: RaceUpdate, db: DbSession, user: CurrentUser) -> RaceRead:
-    """Metadata edit only. Editing `location_lat`/`location_lng` does **not**
-    auto-refetch weather — `weather_temp_c`/`weather_humidity_pct`/
-    `weather_conditions` are left exactly as they were, now potentially stale
-    against the corrected location, until the caller explicitly hits
-    `POST /races/{id}/weather/refresh`. That is a deliberate, separate action
-    (re-running enrichment is not free and not always wanted), not an
-    oversight — documented here rather than adding a `weather_stale` field to
-    the response schema for what is a narrow edge case."""
+    """Metadata edit. Changing the **date or location re-runs weather enrichment**,
+    because those two fields are the entire input to the lookup — leaving the old
+    conditions attached would keep showing yesterday's weather for a corrected date,
+    which reads as data rather than as staleness. Any other edit leaves weather
+    alone.
+
+    The refetch cannot fail the edit: `enrich_weather` swallows every failure path
+    and simply leaves the existing values in place, so a slow or down archive costs
+    a moment, not the save. `POST /races/{id}/weather/refresh` remains available to
+    force a re-run without changing anything.
+    """
     race = get_owned_race(db, user, race_id)
     updates = payload.model_dump(exclude_unset=True)
+
+    weather_inputs = {"date", "location_lat", "location_lng"}
+    changed_weather_input = any(
+        field_name in weather_inputs and getattr(race, field_name) != value
+        for field_name, value in updates.items()
+    )
+
     for field_name, value in updates.items():
         setattr(race, field_name, value)
+
+    if changed_weather_input:
+        enrich_weather(db, race, overwrite=True)
+
     db.commit()
     db.refresh(race)
     return RaceRead.model_validate(race)
@@ -374,20 +398,24 @@ def get_race_laps(
     return [LapSplitRead.model_validate(lap) for lap in laps]
 
 
-@router.post("/{race_id}/weather/refresh", response_model=RaceRead)
-def refresh_weather(race_id: int, db: DbSession, user: CurrentUser) -> RaceRead:
-    """Re-run weather enrichment — for a race whose location was corrected
-    after import. Anchors the lookup to the earliest `is_primary` activity's
-    `start_time` (the race itself only stores a plain local `date`, not a
-    time-of-day). `overwrite=True` — unlike import-time enrichment, this is a
-    deliberate re-run and should replace whatever is there, including a
-    previously-populated humidity value."""
-    race = get_owned_race(db, user, race_id)
+def enrich_weather(db: Session, race: Race, *, overwrite: bool) -> None:
+    """Fetch and apply conditions for the race's **entered date**, in place.
 
-    if race.location_lat is None or race.location_lng is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Race has no location set"
-        )
+    The anchor is `Race.date` — the date the user entered or the import derived —
+    resolved to a UTC hour through the race location's timezone. A recorded
+    activity gives a precise start time, so it is preferred, but *only when it
+    falls on that same local date*: once the user corrects a wrong date, the
+    recording is evidence about the wrong day and following it would silently
+    ignore the edit.
+
+    Requires a location and does nothing without one. Never raises — weather is
+    enrichment, not a precondition (§3), and the service already degrades to
+    `None` on every failure path, so a slow or down archive can't block an edit.
+    """
+    if race.location_lat is None or race.location_lng is None or race.date is None:
+        return
+
+    anchor = utc_anchor_for_local_date(race.location_lat, race.location_lng, race.date)
 
     earliest_start = (
         db.query(RecordedActivity.start_time)
@@ -395,14 +423,39 @@ def refresh_weather(race_id: int, db: DbSession, user: CurrentUser) -> RaceRead:
         .order_by(RecordedActivity.start_time.asc())
         .first()
     )
-    if earliest_start is None:
+    if earliest_start is not None:
+        tz_name = timezone_at(race.location_lat, race.location_lng)
+        recorded_local_date = (
+            earliest_start[0].astimezone(ZoneInfo(tz_name)).date()
+            if tz_name
+            else earliest_start[0].date()
+        )
+        if recorded_local_date == race.date:
+            anchor = earliest_start[0]
+
+    apply_weather_to_race(
+        race, fetch_weather(race.location_lat, race.location_lng, anchor), overwrite=overwrite
+    )
+
+
+@router.post("/{race_id}/weather/refresh", response_model=RaceRead)
+def refresh_weather(race_id: int, db: DbSession, user: CurrentUser) -> RaceRead:
+    """Re-run weather enrichment for a race whose date or location was corrected
+    after import — and the way a manually entered race, which has no recording to
+    anchor to, gets its conditions at all.
+
+    `overwrite=True`: unlike import-time enrichment this is a deliberate re-run,
+    so it replaces whatever is there, including a previously-populated humidity.
+    """
+    race = get_owned_race(db, user, race_id)
+
+    if race.location_lat is None or race.location_lng is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Race has no recorded activity to anchor a weather lookup time",
+            detail="Set the race location before looking up weather.",
         )
 
-    result = fetch_weather(race.location_lat, race.location_lng, earliest_start[0])
-    apply_weather_to_race(race, result, overwrite=True)
+    enrich_weather(db, race, overwrite=True)
     db.commit()
     db.refresh(race)
     return RaceRead.model_validate(race)

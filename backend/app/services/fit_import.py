@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import fitdecode
 
+from app.services.tz import timezone_finder
+
 Segment = Literal["swim", "t1", "bike", "t2", "run"]
 Sport = Literal["swim", "bike", "run", "transition", "other"]
 
@@ -537,16 +539,11 @@ def _dedup_devices(device_infos_raw: list[dict[str, Any]]) -> list[ParsedDevice]
 # Local date resolution (§3: Race.date is the local date, not the UTC date)
 # --------------------------------------------------------------------------- #
 
-_tf_singleton = None
-
 
 def _timezone_finder():
-    global _tf_singleton
-    if _tf_singleton is None:
-        from timezonefinder import TimezoneFinder
-
-        _tf_singleton = TimezoneFinder()
-    return _tf_singleton
+    """Kept as a thin alias so this module's call sites read unchanged; the instance
+    itself is shared with weather enrichment (see `app.services.tz`)."""
+    return timezone_finder()
 
 
 def _resolve_local_date(
