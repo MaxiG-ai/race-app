@@ -25,25 +25,50 @@ hand-written.
 
 ## Local development
 
-Requires [`uv`](https://docs.astral.sh/uv/), Node 22+, and Docker (for
-Postgres).
+Requires only Docker.
 
 ```bash
-# 1. Database
-cp .env.example .env          # then edit secrets/URLs as needed
+docker compose up
+```
+
+That brings up Postgres, the API and the Vite dev server together. Migrations
+run automatically before the API serves, and both source trees are
+bind-mounted, so edits reload in place without a rebuild.
+
+| | |
+|---|---|
+| Frontend | http://localhost:5173 |
+| API | http://localhost:8000 (docs at `/docs`) |
+
+Registration is deliberately closed (§2), so create your account once with the
+CLI:
+
+```bash
+docker compose exec backend python -m app.cli create-user --email you@example.com
+```
+
+Rebuild the images only when dependencies change:
+
+```bash
+docker compose up --build
+```
+
+<details>
+<summary>Running natively instead (requires <code>uv</code> and Node 22+)</summary>
+
+The host defaults in `app/config.py` and `vite.config.ts` point at
+`localhost`, so the native workflow still works against the containerised
+database alone:
+
+```bash
 docker compose up -d db
 
-# 2. Backend — http://localhost:8000, docs at /docs
-cd backend
-uv sync
-uv run alembic upgrade head
+cd backend && uv sync && uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 
-# 3. Frontend — http://localhost:5173, proxies /api to the backend (vite.config.ts)
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
+</details>
 
 Regenerate frontend API types whenever the backend's request/response shapes
 change:
@@ -53,6 +78,17 @@ cd frontend && npm run gen:api
 ```
 
 ### Tests & linting
+
+With the stack up, both toolchains are available inside the containers — the
+backend dev image installs dev dependencies:
+
+```bash
+docker compose exec backend pytest
+docker compose exec backend ruff check .
+docker compose exec frontend npm run lint
+```
+
+Or natively:
 
 ```bash
 cd backend  && uv run pytest && uv run ruff check . && uv run ruff format .

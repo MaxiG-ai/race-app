@@ -38,6 +38,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # Named explicitly so adding a later stage to the Dockerfile can never
+      # silently change which image production builds.
+      target: runtime
     restart: unless-stopped
     env_file:
       - .env

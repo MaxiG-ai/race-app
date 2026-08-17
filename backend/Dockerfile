@@ -28,8 +28,41 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime — no uv, no compiler, no build tooling. Just Python, the
+# Stage 2: dev — used only by docker-compose.yml (local development). Source is
+# bind-mounted rather than copied, so edits reload without a rebuild.
+#
+# The venv lives at /opt/venv, NOT /app/.venv: the bind mount lands on /app and
+# would otherwise shadow the venv built here with the host's macOS-built one.
+# Dev dependencies are included so pytest and ruff can run inside the container.
+# ---------------------------------------------------------------------------
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS dev
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Only the lockfiles — the project itself is the bind mount, and /app is the
+# working directory, so `app.main` imports from the live source tree.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
+
+EXPOSE 8000
+
+# Migrations run before serving here too, so a fresh clone needs no manual step.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+
+# ---------------------------------------------------------------------------
+# Stage 3: runtime — no uv, no compiler, no build tooling. Just Python, the
 # synced venv, and the source tree, run as a non-root user.
+#
+# Kept last so a plain `docker build backend/` still produces the production
+# image; both compose files name their stage explicitly regardless.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 
