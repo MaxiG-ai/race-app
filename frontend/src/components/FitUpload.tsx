@@ -13,6 +13,10 @@ import type { UploadResult } from '@/types'
  * distinct upload (§3 "What Strava exports actually look like"). The UI says so rather
  * than looking like it silently dropped a file the user deliberately chose. `failed`
  * keeps its error message on screen rather than disappearing.
+ *
+ * An optional `raceId` reuses this same uploader to attach files to an existing race
+ * (§3 "Single-sport uploads and manual grouping") instead of running the normal
+ * import/auto-group flow — the plain `<Import>` page usage is unaffected.
  */
 
 function outcomeMessage(result: UploadResult): string {
@@ -35,8 +39,8 @@ const OUTCOME_STYLE: Record<UploadResult['outcome'], string> = {
   rejected: 'text-run',
 }
 
-export function FitUpload() {
-  const uploadFiles = useUploadFiles()
+export function FitUpload({ raceId }: { raceId?: number } = {}) {
+  const uploadFiles = useUploadFiles(raceId)
   const [results, setResults] = useState<UploadResult[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)

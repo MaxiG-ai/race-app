@@ -24,17 +24,32 @@ export function useUploadsTray(status: UploadStatus = 'parsed') {
   })
 }
 
-/** Multipart upload of one or many files under the `files` field the API expects. */
-export function useUploadFiles() {
+/**
+ * Multipart upload of one or many files under the `files` field the API expects.
+ *
+ * An optional `raceId` attaches every uploaded file to that existing race
+ * (`race_id` form field, §3 "Single-sport uploads and manual grouping" — backfilling
+ * a forgotten leg, or a second recording of one already present) instead of letting
+ * it land in the ungrouped tray or auto-group into a new race. Attaching changes the
+ * race's activities/laps/track, so success also invalidates that race's detail query
+ * (and the list, since segment totals on the timeline card can change too) — not just
+ * the uploads tray.
+ */
+export function useUploadFiles(raceId?: number) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (files: File[]) => {
       const formData = new FormData()
       for (const file of files) formData.append('files', file)
+      if (raceId !== undefined) formData.append('race_id', String(raceId))
       return apiFetch<UploadResult[]>('/uploads', { method: 'POST', body: formData })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: uploadKeys.all })
+      if (raceId !== undefined) {
+        queryClient.invalidateQueries({ queryKey: raceKeys.all })
+        queryClient.invalidateQueries({ queryKey: raceKeys.detail(raceId) })
+      }
     },
   })
 }

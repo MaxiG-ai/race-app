@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { ApiError } from '@/api/client'
 import { useRace, useRefreshWeather } from '@/api/races'
 import { CourseMap } from '@/components/CourseMap'
+import { FitUpload } from '@/components/FitUpload'
 import { RecordingSwitch } from '@/components/RecordingSwitch'
 import { GearPicker } from '@/components/GearPicker'
 import { SegmentBar } from '@/components/SegmentBar'
@@ -130,6 +131,21 @@ export default function RaceDetail() {
       </header>
 
       <CourseMap raceId={race.id} fallbackCenter={fallbackCenter} />
+
+      <section aria-labelledby="add-recording-heading">
+        <h2 id="add-recording-heading" className="text-sm font-semibold text-ink">
+          Add a recording
+        </h2>
+        <p className="mt-1 text-sm text-ink/60">
+          Backfill a leg you forgot to upload, or add a second recording of one you
+          already have — e.g. a bike computer with power alongside a watch. Both
+          recordings are kept; use &ldquo;Multiple recordings&rdquo; below to pick which
+          one counts.
+        </p>
+        <div className="mt-3">
+          <FitUpload raceId={race.id} />
+        </div>
+      </section>
 
       <SplitsComparison official={race.official_result} activities={race.recorded_activities} />
 
