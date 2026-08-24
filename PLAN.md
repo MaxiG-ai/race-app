@@ -33,7 +33,7 @@ polished. This is a personal tool, not a showcase.
 | Fixtures | Real unanonymized race data — **repo must stay private** (see fixtures README) |
 | Classification | Auto from measured distances against a seeded `RaceCategory` table; manual override kept alongside the inferred value (§9) |
 | Partial data | Everything nullable but `Race.date`; validation at point of use, not point of save (§10) |
-| Comparison | Same-category only; segment-normalised residual chart (§11) |
+| Comparison | Same-category only; checkpoint gap chart vs a reference race (§11) |
 
 ---
 
@@ -170,12 +170,14 @@ Distance bands used to classify races (§9). Seeded by migration and editable as
 correcting a boundary doesn't need a deploy.
 ```
 id (PK)
-key            slug: sprint, olympic, middle, long, ...
+key            slug: sprint, kurz, mittel, lang, ...
 label          display name
+kind           enum: distance, age_class, relay — only `distance` auto-classifies
 sort_order     for pickers and grouping
-swim_min_m / swim_max_m
+swim_min_m / swim_max_m        null bound = open-ended
 bike_min_m / bike_max_m
 run_min_m  / run_max_m
+tolerance_pct  default 10 — applied outward to both bounds at match time
 is_active
 ```
 
@@ -450,7 +452,8 @@ including Garmin's undecoded proprietary messages.
    record matching more than one window *is* a bug and fails the import.
 5. If no `race_id` given, create a draft `Race`: date from the first session's start time
    **converted to the start location's local timezone** (§3.11), location from the
-   bounding-box centroid, name and `race_type` left for the user.
+   bounding-box centroid, name left for the user. Category is classified automatically
+   from the measured distances (§9), not asked for.
 6. Persist `RecordedActivity` × 5 + their `LapSplit` rows. Segment totals come from the
    `session` message, never from summing laps (§3.2); trailing partial laps are flagged
    `is_partial`. Store the full parsed payload in `raw_data`.
@@ -751,8 +754,8 @@ rendering. The full stream stays in the database.
   times/placings, fueling, per-segment gear.
 - **Gear** (`/gear`) — inventory with accumulated distance, plus unmapped sensor serials
   awaiting a name.
-- **Compare** (`/compare?a=&b=`) — two races side by side: residual chart, conditions
-  diff, fueling diff (§11).
+- **Compare** (`/compare?a=&b=`) — two races side by side: gap chart, conditions diff,
+  fueling diff (§11).
 - **Import** (`/import`) — multi-file upload, plus the ungrouped tray where single-sport
   activities are grouped into races (§3).
 - **Aggregate strip** — thin, single-line summary (total races, distance, elevation)
@@ -789,9 +792,25 @@ segment bar per race: functional (shows pacing balance at a glance), not decorat
 | Background | `#FAFAF8` | Page background (off-white, not stark white) |
 | Ink | `#1C2321` | Primary text (warm near-black) |
 | Border/hairline | `#E4E1D8` | Dividers, card borders |
-| Swim accent | `#1B4B4A` | Deep teal |
-| Bike accent | `#8A6D3B` | Warm slate/tan |
-| Run accent | `#C4622D` | Clay-orange |
+| Swim accent | `#008C7E` | Teal |
+| Bike accent | `#A8862A` | Gold-ochre |
+| Run accent | `#B4472A` | Brick |
+| Faster | `#008C7E` | Diverging positive pole (gap chart, §11) |
+| Slower | `#B4472A` | Diverging negative pole |
+| Neutral midpoint | `#6B6B66` | Zero line, diverging midpoint |
+
+**The original accents failed validation and were re-stepped.** The first draft used
+`#1B4B4A` / `#8A6D3B` / `#C4622D`, which reads fine as decoration but not as data: bike
+and run sat at ΔE 2.0 under protanopia and **10.2 under normal vision** — below the 15
+floor, meaning full-colour readers struggle too. Since `SegmentBar` stacks all three
+adjacently, that is a legibility bug, not a nitpick. The replacements above pass all six
+checks against the `#FAFAF8` surface (worst adjacent pair ΔE 9.3 deutan / 15.3 normal),
+and the faster/slower pair passes at ΔE 11.1 / 24.3. Re-run
+`validate_palette.js` before changing any of them.
+
+Consequence for the gap chart: **course lanes are not tinted with sport hues.** Hue is
+spoken for by the diverging fill, so segment boundaries are drawn as vertical rules with
+text labels instead. One colour job per chart.
 
 Transitions (T1/T2) render as neutral hairline slivers in the segment bar — present but
 visually subordinate to the three sports.
@@ -833,7 +852,7 @@ information, not a generic numbered-sequence marker.
 | `CategoryField` | Resolved category with provenance ("auto from measured distances") + override and revert |
 | `CompletenessList` | Quiet checklist of what a race is still missing, grouped by what it unlocks |
 | `ComparePicker` | Choose the second race; only same-category races are offered |
-| `ResidualChart` | The two-panel centrepiece: cumulative time with filled gap band, plus Δ-vs-zero below |
+| `GapChart` | The centrepiece: gap-to-reference over checkpoints, diverging fill, swappable reference |
 | `ConditionsDiff` | Only the settings that differ, material ones promoted and marked |
 | `FuelingDiff` | Per-segment carbs, g/h and products, side by side |
 
@@ -845,7 +864,7 @@ information, not a generic numbered-sequence marker.
 - Total distance / elevation gain across all races (aggregate queries, no extra tables).
 - Map rendering per race from `gps_track`.
 - Pacing trends per sport / distance / time (via `LapSplit`, sliced by `sport` and joined
-  to `Race.race_type` / `Race.date`).
+  to `Race.race_category_id` / `Race.date`).
 - Weather correlation with performance (temp/humidity on `Race`, joined to pacing data).
 - Manual fueling tracking per race segment: carbs, products used, free-text notes.
 - Gear per race segment, auto-detected from sensor serials where possible, with
@@ -855,8 +874,8 @@ information, not a generic numbered-sequence marker.
   separately from the inferred value.
 - Partial records throughout: any field saveable alone, missing values derived where
   possible and shown as unknown where not.
-- Side-by-side comparison of two same-category races: residual timing chart, fueling
-  comparison, and a diff of conditions and course.
+- Side-by-side comparison of two same-category races: gap-to-reference timing chart,
+  fueling comparison, and a diff of conditions and course.
 
 ---
 
@@ -878,7 +897,7 @@ information, not a generic numbered-sequence marker.
 | M7.5 | Deploy | Compose stack, Caddy + TLS, migrations on boot, backups (see §8) |
 | M8 | Classification | `RaceCategory` seed, `classify.py`, auto-assign on import and on primary change, override UI (§9) |
 | M9 | Partial data | Derived totals, `completeness` on read, per-field autosave, unknown-vs-zero rendering (§10) |
-| M10 | Comparison | `progress_series` at import, `comparison.py` alignment, `ResidualChart`, conditions and fueling diffs (§11) |
+| M10 | Comparison | `progress_series` at import, `comparison.py` alignment, `GapChart`, conditions and fueling diffs (§11) |
 | M11 | Strava | Deferred backfill path (see §3) |
 
 M2 is the highest-risk step and should be built against a real file early; everything
@@ -930,50 +949,68 @@ Single VPS, docker compose, four services:
 
 ## 9. Race Classification
 
-`race_type` is currently a free choice on the race form. It should instead be **inferred
-from the measured distances** and only overridden by hand when the inference is wrong.
+A race's category was a free choice on the race form. It is instead **inferred from the
+measured distances** and only overridden by hand when the inference is wrong.
 
-> **Blocked on input.** The category table below is a placeholder. The intended source is
-> a photo of a distance-category chart that did not arrive with the request, so the exact
-> boundaries — and whether the categories are the five below or a different set — are not
-> yet known. Everything else in this section is independent of those numbers: the
-> mechanism, the storage, the override behaviour and the tie-breaking are all specified,
-> and only the range table needs filling in.
+Source: the DTU distance list supplied as a photo. Distances below are **km, as
+published** (swim / bike / run).
 
-### Category table
+| key | label | swim | bike | run | kind |
+|---|---|---|---|---|---|
+| `schueler` | Schüler (A/B/C/D) | 0.05–0.4 | 1–10 | 0.2–2.5 | age class |
+| `jugend` | Jugend (A und B) | 0.4–0.75 | 10–20 | 2.5–5 | age class |
+| `junioren` | Junioren | 0.75–1.5 | 20–40 | 5–10 | age class |
+| `supersprint` | Supersprintdistanz | 0.25–0.5 | 6.5–13 | 1.7–3.5 | distance |
+| `sprint` | Sprintdistanz | ≤ 0.75 | ≤ 20 | ≤ 5 | distance |
+| `kurz` | Kurzdistanz | 1.5 | 40 | 10 | distance |
+| `mittel` | Mitteldistanz | 1.9–3.0 | 80–90 | 20–21 | distance |
+| `lang` | Langdistanz | 1.0–4.0 | 100–200 | 10.0–42.2 | distance |
+| `mixed_relay` | Mixed Relay | 0.25–0.3 | 5–8 | 1.5–2 | relay |
 
-Stored as **data, not code** — a `race_category` table seeded by migration, so ranges can
-be corrected without a deploy and so a race can keep a foreign key to the category it
-matched.
+Three things about this list drive the design, and none of them are obvious from a
+glance:
 
-```
-RaceCategory
-  id (PK)
-  key              slug: sprint, olympic, middle, long, ...
-  label            display name
-  sort_order       for pickers and grouping
-  swim_min_m / swim_max_m
-  bike_min_m / bike_max_m
-  run_min_m  / run_max_m
-  is_active
-```
+**1. It mixes three different kinds of category.** Schüler, Jugend and Junioren are *age
+classes* — they describe the athlete, not the course, and their distances overlap the open
+distance classes almost entirely (Junioren 0.75–1.5 / 20–40 / 5–10 against Kurzdistanz
+1.5 / 40 / 10). Mixed Relay is a team format. **Only `kind = distance` categories are
+eligible for automatic classification**, because a course cannot tell you how old the
+field was. Age classes and relays remain hand-pickable.
 
-Ranges rather than exact distances, because measured distances never match nominal ones:
-the fixtures show a nominally 40 km bike measured at 40 570 m and 40 868 m, and a
-nominally Olympic race with a 33 746 m bike. A classifier keyed on exact distances would
-match nothing.
+**2. The ranges overlap by design, so "exactly one match" never fires.** Supersprint
+(0.25–0.5 / 6.5–13 / 1.7–3.5) sits entirely inside Sprint (≤ 0.75 / ≤ 20 / ≤ 5) — every
+supersprint race matches both. The tie-break is therefore **narrowest range wins**, not
+nearest midpoint: the most specific category that contains the measurement is the right
+answer, and Sprint acts as the catch-all its "bis" bounds imply.
+
+**3. Nominal distances need tolerance, or real races fail to classify.** Kurzdistanz is
+published as exact values (1.5 / 40 / 10), and measured courses never hit them. Checking
+the four races in the fixtures against the table with a ±10 % tolerance:
+
+| Race | Measured (km) | Result |
+|---|---|---|
+| 2026-08-09 | 1.55 / 40.57 / 9.93 | **Kurzdistanz** — all within 3 % |
+| 2024-08-03 | 1.65 / 40.87 / 9.24 | **Kurzdistanz** — swim +9.7 %, just inside |
+| 2026-06-21 | 0.54 / 19.99 / 5.11 | **Sprintdistanz** — run 2 % over the 5 km bound |
+| 2026-07-11 | 1.57 / 33.75 / 9.17 | **unclassified** — bike −15.6 %, genuinely short |
+
+Without tolerance, three of the four misclassify. With it, the one that stays
+unclassified is the one that *should*: a 33.7 km bike is not a 40 km course, and flagging
+it is more useful than forcing it into a bucket. Tolerance is a per-category
+`tolerance_pct` column defaulting to 10, so the published ranges stay in the table exactly
+as written and the fudge factor is visible and tunable rather than baked into a range.
 
 ### How a race is classified
 
 1. Take the **primary** recorded activity per segment (§2 `is_primary`) and read
    `distance_m` for swim, bike and run. Transitions are ignored — they carry no
    category signal.
-2. Score every active category: a category matches when all three distances fall inside
-   their ranges.
-3. Exactly one match → assign it, `classification_source = auto`.
-4. No match → `custom`, with the nearest category recorded for reference.
-5. More than one match (overlapping ranges) → pick the one whose range midpoints are
-   closest to the measured distances, by summed relative error.
+2. Consider only categories with `kind = distance`. A category matches when all three
+   distances fall inside their bounds, each widened by `tolerance_pct`.
+3. One or more matches → take the **narrowest** matching category, measured by summed
+   range width; `classification_source = auto`.
+4. No match → leave `unclassified`, recording the nearest category and which discipline
+   was furthest out ("bike −15.6 %"), so the reason is visible rather than mysterious.
 
 Classification runs on import, and re-runs when a segment's primary recording changes —
 switching the primary bike recording from the watch (33.7 km) to the Edge (40.5 km) can
@@ -1027,7 +1064,7 @@ feature actually needs the value.
 | Table | Required | Everything else |
 |---|---|---|
 | `Race` | `user_id`, `date` | nullable — including `name`, which defaults to `"Untitled race"` |
-| `OfficialResult` | `race_id` | **all times and placings nullable, including `total_time`** |
+| `OfficialResult` | `race_id` | all times and placings nullable — but `total_time` is **always filled when derivable**, see below |
 | `RaceFueling` | `race_id`, `segment` | nullable |
 | `RecordedActivity` | `race_id`, `segment`, `start_time` | as already specified |
 | `Gear` | `user_id`, `name`, `kind` | nullable |
@@ -1037,8 +1074,23 @@ nowhere to appear. Import fills it; the manual form defaults it to today. This i
 place a value is forced, and it is forced to something correctable rather than blocking
 the save.
 
-`OfficialResult.total_time` becoming nullable is the substantive change — it was the one
-non-null field, and it is precisely the field most often missing at entry time.
+**`total_time` is required in spirit, never in the form.** A race result without a total
+is incomplete, but the user must never be blocked from saving because they typed the five
+splits and not their sum. So:
+
+- Entering all of swim / T1 / bike / T2 / run **computes** `total_time` on write and sets
+  `total_is_derived`. Nothing to type, nothing to block on.
+- The column is nullable *at rest* only so a half-entered result can still be saved —
+  three splits and nothing else has no derivable total, and refusing that save would undo
+  §10 entirely. `completeness` reports the result as incomplete until a total exists.
+- A typed total is **never overwritten** by derivation. If a typed total and the five
+  splits disagree by more than 5 s — chip timing rounds, and transitions are sometimes
+  folded into adjacent legs — the mismatch is surfaced next to the field rather than
+  silently resolved in either direction.
+
+That is the reconciliation between "total should not be null" and "everything must be
+partially saveable": it is never left null when the data to compute it exists, and the one
+state where it stays null is explicitly labelled as unfinished.
 
 ### Derivation, not requirement
 
@@ -1118,18 +1170,13 @@ other; otherwise the picker excludes them.
 ├──────────────────────────────────────────────────────────────────────┤
 │  Δ  swim −0:42 │ T1 +1:12 │ bike −8:20 │ T2 −0:05 │ run −11:38       │
 ├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   cumulative elapsed time                          ╱─── B            │
-│         │                                    ╱────╱                  │
-│         │                             ╱─────╱  ╱── A                 │
-│         │                      ╱─────╱   ╱───╱                       │
-│         │              ╱──────╱    ╱────╱     (band between = gap)   │
-│         └──────────────────────────────────────────────────────      │
-│          swim    │T1│      bike        │T2│       run                │
-├──────────────────────────────────────────────────────────────────────┤
-│   Δ time      ────────────────────────────────────── 0               │
-│         ▁▂▃▂▁          ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔                        │
-│         teal below zero = A faster    clay above = A slower          │
+│   GAP TO REFERENCE                                                   │
+│  0:00 ●───●───●────────●────────●───●───────●────────●  reference    │
+│            ╲                                                         │
+│  2:00       ●────●                teal above 0 = faster              │
+│                   ╲────●────●                                        │
+│  4:00                        ╲─────●──────●  +3:42                   │
+│       Start Swim T1    bike       T2     run      Finish             │
 ├──────────────────────────────────────────────────────────────────────┤
 │  CONDITIONS & COURSE                                                 │
 │  ⚠ bike 40.5 km vs 33.7 km (+20 %)   ⚠ +22 m vs +558 m elevation     │
@@ -1142,68 +1189,76 @@ other; otherwise the picker excludes them.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### The residual chart
+### The gap chart
 
-This is the centrepiece and the part worth getting exactly right.
+The reference image (TriRating's Ironman Hamburg progression chart) settles the form, and
+it is better than the two-panel design this section previously carried. **One panel, not
+two.** The reference race is pinned flat at zero and the other race is drawn as its gap
+from it — so the residual *is* the chart rather than a supporting strip beneath an
+absolute-time plot that nobody reads.
 
-**X axis — segmented lanes, not raw distance.** The axis is divided into five lanes
-(swim, T1, bike, T2, run). Within a lane, position is the *fraction of that segment
-completed*, so two bikes of different measured length still align end to end. Lane widths
-are proportional to the mean of the two races' durations for that segment, so the axis
-reads roughly as time and the bike doesn't get squeezed into the same width as T1.
+```
+        Start   Swim   T1        bike ─────────    T2      run ────────   Finish
+  0:00 ─●───────●──────●──────────●────────●────────●───────●──────●────────●──  reference
+         ╲                                                                        (Karlsruhe
+   1:00   ●──────╲                          teal above 0 = faster                  2026-07-11)
+                  ╲────●                                                          
+   2:00             ▔▔▔▔ ╲                                                        
+                          ●────────●        brick below 0 = slower                
+   3:00                              ╲──────●──────●                              
+                                                    ╲──────●  ← Stutensee, +3:42
+```
 
-Normalising per segment is what makes races with differing measured distances comparable
-at all. The honest alternative — absolute distance — leaves one race's run ending 800 m
-before the other's, and every comparison near the finish becomes noise. The cost is that
-the axis is not linear in distance, which the conditions panel compensates for by stating
-the distance difference outright.
-
-**Top panel — cumulative elapsed time.** Both races plotted from their own start, with
-the area between them filled. The band's vertical thickness at any point *is* the time
-gap at that point in the course.
-
-**Bottom panel — the residual.** `Δ(p) = t_A(p) − t_B(p)`, plotted against a zero
-baseline and filled. Below zero means A is ahead. This is the plot the request asks for:
-the slope of the residual is where time is being taken, not merely where the athlete is
+**Y axis — time behind the reference, increasing downward.** Inverted relative to a normal
+time axis, matching the reference image: falling away visually means losing time, which is
+how the sport talks about it. The comparison race crosses above zero wherever it was
 ahead.
 
-A useful property worth preserving: **the residual at each lane boundary equals the
-cumulative split delta**, so the Δ strip at the top of the page is literally this curve
-sampled at five points. The two must never disagree.
+**X axis — discrete checkpoints, not continuous distance.** The reference chart uses
+`Start · Swim · T1 · 50k · Lap 1 · 140k · T2 · Lap 1–3 · Finish`, and that is exactly the
+granularity real timing data has. Ours:
 
-**Colour.** Hue is already spoken for — the palette uses teal/tan/clay to mean
-swim/bike/run, and lanes are tinted with those at very low opacity. So the two races are
-distinguished by **weight and dash, not hue**: race A solid ink, race B dashed ink at
-55 % opacity. The residual fill then reuses the sport palette semantically: deep teal
-`#1B4B4A` below the line (A faster), clay `#C4622D` above (A slower). This avoids
-red/green entirely, which is both off-palette and the worst choice for colour-blind
-readers.
+- **Segment boundaries are always checkpoints** — Start, Swim, T1, T2, Finish. These exist
+  for every race, including one entered by hand with only official splits.
+- **Intra-segment checkpoints come from laps** where both races have them (5 km on the
+  bike, 1 km on the run, per §3).
+- **When the two races' segment distances agree within 5 %**, checkpoints are placed at
+  absolute distances and labelled that way — `20k`, `40k`, `Lap 2` — which is what makes
+  the reference chart legible.
+- **When they don't** (33.7 km against 40.5 km), checkpoints fall back to even fractions
+  of each segment, labelled with the reference race's distance and marked as normalised.
+  The conditions panel states the distance difference outright, so the axis never quietly
+  misleads.
 
-**Degradation.** A race with no recorded stream — manual entry only (§10) — has no
-continuous curve. It renders as a **step function** across the five lanes from its
-official splits, visibly blockier than a recorded race, with a note saying so. The
-comparison still works; it is just coarser.
+Between checkpoints the line is straight — piecewise linear, as in the reference. No
+smoothing: an interpolated curve would imply per-second knowledge the checkpoint data
+doesn't have.
 
-### Data behind it
+**Fill.** The area between the line and zero is filled as a diverging encoding — teal
+where the race was faster, brick where slower, with the zero line itself in neutral gray.
+That is the polarity job from the palette rules, and it is why the fill reuses the sport
+hues rather than introducing red/green: red/green is both off-palette and the worst
+possible choice for colour-blind readers.
 
-Two schema consequences:
+**Invariant.** The gap at each segment boundary equals the cumulative split delta, so the
+Δ strip at the top of the page is literally this curve sampled at five points. If they
+ever disagree, one of them is wrong.
 
-1. **`gps_track` points must carry cumulative distance.** The current shape is
-   `{lat, lng, elevation, timestamp}`, which cannot answer "how far along was I at time
-   t" without recomputing haversine distances — noisy, and disagreeing with the device's
-   own odometer. The FIT `record` message carries `distance` on 100 % of points in all
-   five fixtures. Add it: `{lat, lng, elevation, timestamp, distance_m}`.
+**Degradation.** A race with no recorded stream renders from official splits alone — five
+checkpoints instead of twenty, visibly coarser, with a note saying so. The comparison
+still works.
 
-2. **A resampled progress series is precomputed at import.** Serving two 9 000-point
-   streams and aligning them in the browser is both slow and the wrong place for the
-   maths. Each `RecordedActivity` stores `progress_series` — roughly 200 points of
-   `{progress, elapsed_s, distance_m}` at even progress intervals. Small, cached, and
-   makes the comparison endpoint a lookup rather than a computation.
+**Accessibility.** Two series where one is a flat baseline, so the title names them and
+the zero line is labelled with the reference race rather than shipping a legend box; the
+comparison line is direct-labelled at its right end with the finishing gap. A crosshair
+tooltip gives both races' elapsed times and the gap at the hovered checkpoint, and the
+same data is available as a checkpoint table — so nothing is conveyed by colour alone.
+A control swaps which race is the reference.
 
-`GET /api/races/{a}/compare/{b}` returns both aligned series, the per-segment deltas, the
-conditions diff and the fueling diff — one request, everything the page needs. The
-alignment maths lives in `services/comparison.py` and is unit-tested against the fixture
-pairs, which include a genuine same-athlete same-category pair.
+**More than two races.** The reference image plots fourteen. The shape generalises for
+free, but the colour does not: N races need a validated categorical palette rather than
+one diverging fill, and the fill has to go. Out of scope for v1, noted so the chart
+component isn't built in a way that forecloses it.
 
 ### Fueling comparison
 
