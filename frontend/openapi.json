@@ -361,6 +361,7 @@
           "races"
         ],
         "summary": "Create Race",
+        "description": "A manually created race gets its conditions straight away when it is given a\nlocation, since it has no import to enrich it and the date is already known.",
         "operationId": "create_race_api_races_post",
         "parameters": [
           {
@@ -477,7 +478,7 @@
           "races"
         ],
         "summary": "Update Race",
-        "description": "Metadata edit only. Editing `location_lat`/`location_lng` does **not**\nauto-refetch weather \u2014 `weather_temp_c`/`weather_humidity_pct`/\n`weather_conditions` are left exactly as they were, now potentially stale\nagainst the corrected location, until the caller explicitly hits\n`POST /races/{id}/weather/refresh`. That is a deliberate, separate action\n(re-running enrichment is not free and not always wanted), not an\noversight \u2014 documented here rather than adding a `weather_stale` field to\nthe response schema for what is a narrow edge case.",
+        "description": "Metadata edit. Changing the **date or location re-runs weather enrichment**,\nbecause those two fields are the entire input to the lookup \u2014 leaving the old\nconditions attached would keep showing yesterday's weather for a corrected date,\nwhich reads as data rather than as staleness. Any other edit leaves weather\nalone.\n\nThe refetch cannot fail the edit: `enrich_weather` swallows every failure path\nand simply leaves the existing values in place, so a slow or down archive costs\na moment, not the save. `POST /races/{id}/weather/refresh` remains available to\nforce a re-run without changing anything.",
         "operationId": "update_race_api_races__race_id__patch",
         "parameters": [
           {
@@ -895,7 +896,7 @@
           "races"
         ],
         "summary": "Refresh Weather",
-        "description": "Re-run weather enrichment \u2014 for a race whose location was corrected\nafter import. Anchors the lookup to the earliest `is_primary` activity's\n`start_time` (the race itself only stores a plain local `date`, not a\ntime-of-day). `overwrite=True` \u2014 unlike import-time enrichment, this is a\ndeliberate re-run and should replace whatever is there, including a\npreviously-populated humidity value.",
+        "description": "Re-run weather enrichment for a race whose date or location was corrected\nafter import \u2014 and the way a manually entered race, which has no recording to\nanchor to, gets its conditions at all.\n\n`overwrite=True`: unlike import-time enrichment this is a deliberate re-run,\nso it replaces whatever is there, including a previously-populated humidity.",
         "operationId": "refresh_weather_api_races__race_id__weather_refresh_post",
         "parameters": [
           {
@@ -2539,7 +2540,14 @@
       "OfficialResultUpsert": {
         "properties": {
           "total_time": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Total Time"
           },
           "swim_time": {
@@ -2621,11 +2629,8 @@
           }
         },
         "type": "object",
-        "required": [
-          "total_time"
-        ],
         "title": "OfficialResultUpsert",
-        "description": "`PUT /races/{id}/official-result` body."
+        "description": "`PUT /races/{id}/official-result` body.\n\n`total_time` is optional *here* but NOT NULL in the database: omit it and the server\nsums the five splits. If any split is also missing there is nothing to sum, and the\nrequest is refused with a message naming what to fill in \u2014 no zero, no guess."
       },
       "RaceAttachRequest": {
         "properties": {

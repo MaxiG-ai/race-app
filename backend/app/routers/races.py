@@ -56,6 +56,11 @@ from app.schemas.race import (
 )
 from app.services.aggregates import RACE_SEGMENT_ORDER, RaceAggregates, race_aggregates_by_id
 from app.services.geo import simplify_for_precision, track_bounds
+from app.services.official_result import (
+    SPLIT_FIELDS,
+    TotalTimeUnresolvable,
+    resolve_total_time,
+)
 from app.services.tz import timezone_at
 from app.services.weather import (
     apply_weather_to_race,
@@ -232,12 +237,26 @@ def upsert_official_result(
     race_id: int, payload: OfficialResultUpsert, db: DbSession, user: CurrentUser
 ) -> OfficialResultRead:
     race = get_owned_race(db, user, race_id)
+    fields = payload.model_dump()
+
+    splits = {name: fields.get(name) for name in SPLIT_FIELDS}
+    try:
+        resolved = resolve_total_time(fields.get("total_time"), splits)
+    except TotalTimeUnresolvable as exc:
+        # 422 with the specific gaps, so the form can point at the fields rather than
+        # showing a generic "invalid input".
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"message": str(exc), "missing_splits": exc.missing},
+        ) from exc
+    fields["total_time"] = resolved.total_time
+
     existing = db.query(OfficialResult).filter(OfficialResult.race_id == race.id).one_or_none()
     if existing is None:
-        existing = OfficialResult(race_id=race.id, **payload.model_dump())
+        existing = OfficialResult(race_id=race.id, **fields)
         db.add(existing)
     else:
-        for field_name, value in payload.model_dump().items():
+        for field_name, value in fields.items():
             setattr(existing, field_name, value)
     db.commit()
     db.refresh(existing)

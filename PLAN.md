@@ -32,7 +32,7 @@ polished. This is a personal tool, not a showcase.
 | v1 scope | M0–M7; then M8–M10 for this feature set; Strava (M11) deferred |
 | Fixtures | Real unanonymized race data — **repo must stay private** (see fixtures README) |
 | Classification | Auto from measured distances against a seeded `RaceCategory` table; manual override kept alongside the inferred value (§9) |
-| Partial data | Everything nullable but `Race.date`; validation at point of use, not point of save (§10) |
+| Partial data | Everything nullable but `Race.date` and `OfficialResult.total_time`, which is summed from the splits rather than demanded (§10) |
 | Comparison | Same-category only; checkpoint gap chart vs a reference race (§11) |
 
 ---
@@ -239,9 +239,8 @@ rows, plus `distance_offset_m` — no denormalised counter to drift out of sync.
 ```
 id (PK)
 race_id (FK, unique)
-total_time        nullable — computed from the five splits when they are all present,
-                  never left null when derivable (§10)
-total_is_derived  bool
+total_time        NOT NULL — but never typed by hand when it can be worked out:
+                  omit it and the server sums the five splits (§10)
 swim_time         nullable
 t1_time           nullable — blank if not separately timed
 bike_time         nullable
@@ -1055,7 +1054,7 @@ feature actually needs the value.
 | Table | Required | Everything else |
 |---|---|---|
 | `Race` | `user_id`, `date` | nullable — including `name`, which defaults to `"Untitled race"` |
-| `OfficialResult` | `race_id` | all times and placings nullable — but `total_time` is **always filled when derivable**, see below |
+| `OfficialResult` | `race_id`, `total_time` | splits and placings nullable; `total_time` is derived from the splits rather than demanded, see below |
 | `RaceFueling` | `race_id`, `segment` | nullable |
 | `RecordedActivity` | `race_id`, `segment`, `start_time` | as already specified |
 | `Gear` | `user_id`, `name`, `kind` | nullable |
@@ -1065,23 +1064,25 @@ nowhere to appear. Import fills it; the manual form defaults it to today. This i
 place a value is forced, and it is forced to something correctable rather than blocking
 the save.
 
-**`total_time` is required in spirit, never in the form.** A race result without a total
-is incomplete, but the user must never be blocked from saving because they typed the five
-splits and not their sum. So:
+**`total_time` is the one exception to the nullability rule, and it stays NOT NULL.** A
+result without a total is not a result. What the user should never have to do is *work it
+out* — so the two paths are:
 
-- Entering all of swim / T1 / bike / T2 / run **computes** `total_time` on write and sets
-  `total_is_derived`. Nothing to type, nothing to block on.
-- The column is nullable *at rest* only so a half-entered result can still be saved —
-  three splits and nothing else has no derivable total, and refusing that save would undo
-  §10 entirely. `completeness` reports the result as incomplete until a total exists.
-- A typed total is **never overwritten** by derivation. If a typed total and the five
-  splits disagree by more than 5 s — chip timing rounds, and transitions are sometimes
-  folded into adjacent legs — the mismatch is surfaced next to the field rather than
-  silently resolved in either direction.
+- **All five splits entered** → the total is summed on write. Nothing to type.
+- **Otherwise** → nothing is calculated, and the save is refused with a prompt naming the
+  gaps: *"Enter the total time, or fill in every split so it can be calculated. Still
+  missing: T1, run."* The form shows the same message live, and shows the calculated
+  figure as soon as the last split lands, so the arithmetic is visible before saving.
 
-That is the reconciliation between "total should not be null" and "everything must be
-partially saveable": it is never left null when the data to compute it exists, and the one
-state where it stays null is explicitly labelled as unfinished.
+A typed total is **never** overwritten by derivation. The user may be copying the
+organizer's figure, which can differ from the sum by a second or two of chip-timing
+rounding or by transitions folded into adjacent legs — and that number is the more
+authoritative one.
+
+Note what this deliberately gives up: three splits and no total cannot be parked
+half-entered. That is the accepted cost of a total that is always present and always
+trustworthy, and it applies only to `OfficialResult` — the race itself, its fueling and
+its gear all remain partially saveable.
 
 ### Derivation, not requirement
 

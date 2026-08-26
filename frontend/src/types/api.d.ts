@@ -150,7 +150,11 @@ export interface paths {
          */
         get: operations["list_races_api_races_get"];
         put?: never;
-        /** Create Race */
+        /**
+         * Create Race
+         * @description A manually created race gets its conditions straight away when it is given a
+         *     location, since it has no import to enrich it and the date is already known.
+         */
         post: operations["create_race_api_races_post"];
         delete?: never;
         options?: never;
@@ -185,14 +189,16 @@ export interface paths {
         head?: never;
         /**
          * Update Race
-         * @description Metadata edit only. Editing `location_lat`/`location_lng` does **not**
-         *     auto-refetch weather — `weather_temp_c`/`weather_humidity_pct`/
-         *     `weather_conditions` are left exactly as they were, now potentially stale
-         *     against the corrected location, until the caller explicitly hits
-         *     `POST /races/{id}/weather/refresh`. That is a deliberate, separate action
-         *     (re-running enrichment is not free and not always wanted), not an
-         *     oversight — documented here rather than adding a `weather_stale` field to
-         *     the response schema for what is a narrow edge case.
+         * @description Metadata edit. Changing the **date or location re-runs weather enrichment**,
+         *     because those two fields are the entire input to the lookup — leaving the old
+         *     conditions attached would keep showing yesterday's weather for a corrected date,
+         *     which reads as data rather than as staleness. Any other edit leaves weather
+         *     alone.
+         *
+         *     The refetch cannot fail the edit: `enrich_weather` swallows every failure path
+         *     and simply leaves the existing values in place, so a slow or down archive costs
+         *     a moment, not the save. `POST /races/{id}/weather/refresh` remains available to
+         *     force a re-run without changing anything.
          */
         patch: operations["update_race_api_races__race_id__patch"];
         trace?: never;
@@ -298,12 +304,12 @@ export interface paths {
         put?: never;
         /**
          * Refresh Weather
-         * @description Re-run weather enrichment — for a race whose location was corrected
-         *     after import. Anchors the lookup to the earliest `is_primary` activity's
-         *     `start_time` (the race itself only stores a plain local `date`, not a
-         *     time-of-day). `overwrite=True` — unlike import-time enrichment, this is a
-         *     deliberate re-run and should replace whatever is there, including a
-         *     previously-populated humidity value.
+         * @description Re-run weather enrichment for a race whose date or location was corrected
+         *     after import — and the way a manually entered race, which has no recording to
+         *     anchor to, gets its conditions at all.
+         *
+         *     `overwrite=True`: unlike import-time enrichment this is a deliberate re-run,
+         *     so it replaces whatever is there, including a previously-populated humidity.
          */
         post: operations["refresh_weather_api_races__race_id__weather_refresh_post"];
         delete?: never;
@@ -778,10 +784,14 @@ export interface components {
         /**
          * OfficialResultUpsert
          * @description `PUT /races/{id}/official-result` body.
+         *
+         *     `total_time` is optional *here* but NOT NULL in the database: omit it and the server
+         *     sums the five splits. If any split is also missing there is nothing to sum, and the
+         *     request is refused with a message naming what to fill in — no zero, no guess.
          */
         OfficialResultUpsert: {
             /** Total Time */
-            total_time: number;
+            total_time?: number | null;
             /** Swim Time */
             swim_time?: number | null;
             /** T1 Time */

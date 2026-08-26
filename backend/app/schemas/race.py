@@ -27,9 +27,14 @@ class OfficialResultRead(BaseModel):
 
 
 class OfficialResultUpsert(BaseModel):
-    """`PUT /races/{id}/official-result` body."""
+    """`PUT /races/{id}/official-result` body.
 
-    total_time: int
+    `total_time` is optional *here* but NOT NULL in the database: omit it and the server
+    sums the five splits. If any split is also missing there is nothing to sum, and the
+    request is refused with a message naming what to fill in — no zero, no guess.
+    """
+
+    total_time: int | None = None
     swim_time: int | None = None
     t1_time: int | None = None
     bike_time: int | None = None
