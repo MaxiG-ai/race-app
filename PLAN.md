@@ -29,8 +29,11 @@ polished. This is a personal tool, not a showcase.
 | Grouping | In v1 (M2.5); synthesized transitions flagged `is_derived` |
 | Gear | Tracked per segment (M6.5); auto-detected from sensor serials, shoes manual |
 | Duplicate recordings | Kept, one marked `is_primary` per segment |
-| v1 scope | M0–M7; Strava deferred |
+| v1 scope | M0–M7; then M8–M10 for this feature set; Strava (M11) deferred |
 | Fixtures | Real unanonymized race data — **repo must stay private** (see fixtures README) |
+| Classification | Auto from measured distances against a seeded `RaceCategory` table; manual override kept alongside the inferred value (§9) |
+| Partial data | Everything nullable but `Race.date`; validation at point of use, not point of save (§10) |
+| Comparison | Same-category only; checkpoint gap chart vs a reference race (§11) |
 
 ---
 
@@ -77,6 +80,8 @@ race-app/
         grouping.py      # group single-sport uploads into a race (§3 Grouping)
         gear.py          # device_info serial → gear resolution (§3 Gear detection)
         weather.py       # Open-Meteo historical enrichment
+        classify.py      # distance ranges → race category (§9)
+        comparison.py    # align two races onto a common checkpoint axis (§11)
         aggregates.py    # summary stats queries
         geo.py           # polyline simplification / downsampling
       migrations/        # Alembic
@@ -88,7 +93,7 @@ race-app/
     src/
       api/               # typed fetch functions + TanStack Query hooks
       components/        # RaceCard, SegmentBar, StatStrip, TimelineSpine, ...
-      pages/             # Timeline.tsx, RaceDetail.tsx, RaceEdit.tsx, Import.tsx, Login.tsx
+      pages/             # Timeline, RaceDetail, RaceEdit, Import, Login, Gear, Compare
       types/             # generated from FastAPI OpenAPI schema
       lib/               # formatting helpers (pace, time, duration)
     package.json
@@ -122,11 +127,15 @@ Event shell. One row per race event.
 ```
 id (PK)
 user_id (FK, indexed) owner; every read and write is scoped by it — see §4 Tenancy
-name
-date
-location_name
-location_lat / location_lng
-race_type             enum: sprint, olympic, half_iron, full_iron, custom
+name                  defaults to "Untitled race" — never blocks a save (§10)
+date                  the one required field besides user_id; timeline orders by it
+location_name         nullable
+location_lat / location_lng   nullable
+race_category_id (FK) nullable — assigned category (§9)
+auto_category_id (FK) nullable — what the classifier chose, kept even when overridden
+classification_source enum: auto, manual, unclassified
+classified_at         nullable
+classification_detail jsonb, nullable — why classification failed, for the UI to explain
 weather_temp_c        nullable, from weather API enrichment
 weather_humidity_pct  nullable, from weather API (FIT humidity field is never populated)
 weather_conditions    nullable, e.g. "clear", "overcast"
@@ -153,7 +162,23 @@ Total carbs is derived by summing rows, not stored. `products` is JSONB rather t
 normalised catalogue: v1 needs to *record* what was used, and free-form entry does that
 without a product table and its picker. Promoting products to their own table is the
 upgrade path if per-product analysis ("did I run better on X?") becomes a real question —
-see §9.
+see §12.
+
+### `RaceCategory`
+Distance bands used to classify races (§9). Seeded by migration and editable as data, so
+correcting a boundary doesn't need a deploy.
+```
+id (PK)
+key            slug: sprint, kurz, mittel, lang, ...
+label          display name
+kind           enum: distance, age_class, relay — only `distance` auto-classifies
+sort_order     for pickers and grouping
+swim_min_m / swim_max_m        null bound = open-ended
+bike_min_m / bike_max_m
+run_min_m  / run_max_m
+tolerance_pct  default 10 — applied outward to both bounds at match time
+is_active
+```
 
 ### `Upload`
 Staging row for every file or Strava activity, created *before* it belongs to a race.
@@ -214,7 +239,9 @@ rows, plus `distance_offset_m` — no denormalised counter to drift out of sync.
 ```
 id (PK)
 race_id (FK, unique)
-total_time
+total_time        nullable — computed from the five splits when they are all present,
+                  never left null when derivable (§10)
+total_is_derived  bool
 swim_time         nullable
 t1_time           nullable — blank if not separately timed
 bike_time         nullable
@@ -255,7 +282,11 @@ avg_temp_c        nullable — Garmin device temperature; NOT air temp, see §3 
 rpe_estimated     nullable, Apple developer field only
 avg_mets          nullable, Apple developer field only
 bounds_*          nullable — session bounding box (n/s/e/w lat/lng) for map fitting
-gps_track         jsonb — array of {lat, lng, elevation, timestamp}
+gps_track         jsonb — array of {lat, lng, elevation, timestamp, distance_m}.
+                  distance_m is the device's own odometer; recomputing from coordinates
+                  is noisy and disagrees with the watch. Needed by the gap chart (§11)
+progress_series   jsonb — ~200 points of {progress, elapsed_s, distance_m}, resampled at
+                  import so the browser never aligns two 9000-point streams (§11)
 raw_data          jsonb — full parsed FIT/Strava payload, safety net for unmapped fields
 imported_at
 ```
@@ -683,6 +714,10 @@ All under `/api`. Response shapes drive the generated TS types.
 | `GET` | `/gear/unknown-devices` | Sensor serials seen in imports with no gear mapping yet. |
 | `POST` | `/gear/{id}/devices` | Map a serial to a gear item; backfills past activities. |
 | `POST` | `/races/{id}/weather/refresh` | Re-run weather enrichment. |
+| `GET` | `/races/{a}/compare/{b}` | Everything the comparison page needs in one request: both aligned progress series, per-segment deltas, conditions diff, fueling diff (§11). |
+| `GET` | `/races/{id}/comparable` | Races eligible to compare against this one — same category, plus the ±10 % rule for `custom`. Backs the picker. |
+| `POST` | `/races/{id}/classify` | Re-run classification; updates `auto_category_id`, and `race_category_id` only when not manually overridden. |
+| `GET` | `/categories` | The category table, for pickers and for showing range boundaries. |
 | `GET` | `/stats/summary` | Aggregate strip: race count, total distance, total elevation. Optional date range. |
 
 **Payload note:** ~9k GPS points per race × 5 sessions is multi-MB of JSON if served
@@ -761,9 +796,24 @@ segment bar per race: functional (shows pacing balance at a glance), not decorat
 | Background | `#FAFAF8` | Page background (off-white, not stark white) |
 | Ink | `#1C2321` | Primary text (warm near-black) |
 | Border/hairline | `#E4E1D8` | Dividers, card borders |
-| Swim accent | `#1B4B4A` | Deep teal |
-| Bike accent | `#8A6D3B` | Warm slate/tan |
-| Run accent | `#C4622D` | Clay-orange |
+| Swim accent | `#008C7E` | Teal |
+| Bike accent | `#A8862A` | Gold-ochre |
+| Run accent | `#B4472A` | Brick |
+| Faster | `#008C7E` | Diverging positive pole (gap chart, §11) |
+| Slower | `#B4472A` | Diverging negative pole |
+| Neutral midpoint | `#6B6B66` | Zero line, diverging midpoint |
+
+**The original accents failed validation and were re-stepped.** The first draft used
+`#1B4B4A` / `#8A6D3B` / `#C4622D`, which reads fine as decoration but not as data: bike
+and run sat at ΔE 2.0 under protanopia and **10.2 under normal vision** — below the 15
+floor, meaning full-colour readers struggle too. Since `SegmentBar` stacks all three
+adjacently, that is a legibility bug, not a nitpick. The replacements above pass all six
+checks against the `#FAFAF8` surface (worst adjacent pair ΔE 9.3 deutan / 15.3 normal),
+and the faster/slower pair passes at ΔE 11.1 / 24.3.
+
+Consequence for the gap chart: **course lanes are not tinted with sport hues.** Hue is
+spoken for by the diverging fill, so segment boundaries are drawn as vertical rules with
+text labels instead. One colour job per chart.
 
 Transitions (T1/T2) render as neutral hairline slivers in the segment bar — present but
 visually subordinate to the three sports.
@@ -802,6 +852,12 @@ information, not a generic numbered-sequence marker.
 | `GearList` | Gear inventory with accumulated distance; retire/rename |
 | `DevicePrompt` | "New sensor seen — which gear is this?" one-time mapping |
 | `RecordingSwitch` | Shown when a segment has >1 recording; pick which is primary |
+| `CategoryField` | Resolved category with provenance ("auto from measured distances") + override and revert |
+| `CompletenessList` | Quiet checklist of what a race is still missing, grouped by what it unlocks |
+| `ComparePicker` | Choose the second race; only same-category races are offered |
+| `GapChart` | The centrepiece: gap-to-reference over checkpoints, diverging fill, swappable reference |
+| `ConditionsDiff` | Only the settings that differ, material ones promoted and marked |
+| `FuelingDiff` | Per-segment carbs, g/h and products, side by side |
 
 ---
 
@@ -817,6 +873,12 @@ information, not a generic numbered-sequence marker.
 - Gear per race segment, auto-detected from sensor serials where possible, with
   accumulated distance per bike and per pair of shoes.
 - Multiple recordings of the same segment from different devices, with one marked primary.
+- Automatic race classification from measured distances, with manual override retained
+  separately from the inferred value.
+- Partial records throughout: any field saveable alone, missing values derived where
+  possible and shown as unknown where not.
+- Side-by-side comparison of two same-category races: gap-to-reference timing chart,
+  fueling comparison, and a diff of conditions and course.
 
 ---
 
@@ -836,7 +898,10 @@ information, not a generic numbered-sequence marker.
 | M6.5 | Gear | `Gear`/`GearDevice`, serial auto-detection with backfill, manual shoe assignment, distance-per-item |
 | M7 | Weather | Open-Meteo enrichment at import + refresh endpoint |
 | M7.5 | Deploy | Compose stack, Caddy + TLS, migrations on boot, backups (see §8) |
-| M8 | Strava | Deferred backfill path (see §3) |
+| M8 | Classification | `RaceCategory` seed, `classify.py`, auto-assign on import and on primary change, override UI (§9) |
+| M9 | Partial data | `total_time` derivation, `completeness` on read, per-field autosave, unknown-vs-zero rendering (§10) |
+| M10 | Comparison | `progress_series` backfill, `comparison.py` alignment, `GapChart`, conditions and fueling diffs (§11) |
+| M11 | Strava | Deferred backfill path (see §3) |
 
 M2 is the highest-risk step and should be built against a real file early; everything
 downstream depends on its normalized output. M1.5 comes before it so no endpoint is ever
@@ -873,7 +938,350 @@ Single VPS, docker compose, four services:
 
 ---
 
-## 9. Open Decisions / Deferred
+## 9. Race Classification
+
+A race's category was a free choice on the race form. It is instead **inferred from the
+measured distances** and only overridden by hand when the inference is wrong.
+
+Source: the DTU distance list supplied as a photo. Distances below are **km, as
+published** (swim / bike / run).
+
+| key | label | swim | bike | run | kind |
+|---|---|---|---|---|---|
+| `schueler` | Schüler (A/B/C/D) | 0.05–0.4 | 1–10 | 0.2–2.5 | age class |
+| `jugend` | Jugend (A und B) | 0.4–0.75 | 10–20 | 2.5–5 | age class |
+| `junioren` | Junioren | 0.75–1.5 | 20–40 | 5–10 | age class |
+| `supersprint` | Supersprintdistanz | 0.25–0.5 | 6.5–13 | 1.7–3.5 | distance |
+| `sprint` | Sprintdistanz | ≤ 0.75 | ≤ 20 | ≤ 5 | distance |
+| `kurz` | Kurzdistanz | 1.5 | 40 | 10 | distance |
+| `mittel` | Mitteldistanz | 1.9–3.0 | 80–90 | 20–21 | distance |
+| `lang` | Langdistanz | 1.0–4.0 | 100–200 | 10.0–42.2 | distance |
+| `mixed_relay` | Mixed Relay | 0.25–0.3 | 5–8 | 1.5–2 | relay |
+
+Three things about this list drive the design, and none of them are obvious from a
+glance:
+
+**1. It mixes three different kinds of category.** Schüler, Jugend and Junioren are *age
+classes* — they describe the athlete, not the course, and their distances overlap the open
+distance classes almost entirely (Junioren 0.75–1.5 / 20–40 / 5–10 against Kurzdistanz
+1.5 / 40 / 10). Mixed Relay is a team format. **Only `kind = distance` categories are
+eligible for automatic classification**, because a course cannot tell you how old the
+field was. Age classes and relays remain hand-pickable.
+
+**2. The ranges overlap by design, so "exactly one match" never fires.** Supersprint
+(0.25–0.5 / 6.5–13 / 1.7–3.5) sits entirely inside Sprint (≤ 0.75 / ≤ 20 / ≤ 5) — every
+supersprint race matches both. The tie-break is therefore **narrowest range wins**, not
+nearest midpoint: the most specific category that contains the measurement is the right
+answer, and Sprint acts as the catch-all its "bis" bounds imply.
+
+**3. Nominal distances need tolerance, or real races fail to classify.** Kurzdistanz is
+published as exact values (1.5 / 40 / 10), and measured courses never hit them. Checking
+the four races in the fixtures against the table with a ±10 % tolerance:
+
+| Race | Measured (km) | Result |
+|---|---|---|
+| 2026-08-09 | 1.55 / 40.57 / 9.93 | **Kurzdistanz** — all within 3 % |
+| 2024-08-03 | 1.65 / 40.87 / 9.24 | **Kurzdistanz** — swim +9.7 %, just inside |
+| 2026-06-21 | 0.54 / 19.99 / 5.11 | **Sprintdistanz** — run 2 % over the 5 km bound |
+| 2026-07-11 | 1.57 / 33.75 / 9.17 | **unclassified** — bike −15.6 %, genuinely short |
+
+Without tolerance, three of the four misclassify. With it, the one that stays
+unclassified is the one that *should*: a 33.7 km bike is not a 40 km course, and flagging
+it is more useful than forcing it into a bucket. Tolerance is a per-category
+`tolerance_pct` column defaulting to 10, so the published ranges stay in the table exactly
+as written and the fudge factor is visible and tunable rather than baked into a range.
+
+### How a race is classified
+
+1. Take the **primary** recorded activity per segment (§2 `is_primary`) and read
+   `distance_m` for swim, bike and run. Transitions are ignored — they carry no
+   category signal.
+2. Consider only categories with `kind = distance`. A category matches when all three
+   distances fall inside their bounds, each widened by `tolerance_pct`.
+3. One or more matches → take the **narrowest** matching category, measured by summed
+   range width; `classification_source = auto`.
+4. No match → leave `unclassified`, recording the nearest category and which discipline
+   was furthest out ("bike −15.6 %"), so the reason is visible rather than mysterious.
+
+Classification runs on import, and re-runs when a segment's primary recording changes —
+switching the primary bike recording from the watch (33.7 km) to the Edge (40.5 km) can
+legitimately change the category.
+
+### Storage and override
+
+```
+Race
+  race_category_id (FK, nullable)       the assigned category
+  classification_source  enum: auto, manual, unclassified
+  classified_at          nullable
+  auto_category_id (FK, nullable)       what the classifier would have chosen
+```
+
+`auto_category_id` is kept **alongside** a manual override rather than being overwritten.
+Two reasons: the UI can show "you set this to Olympic; measurements suggest Sprint",
+which is exactly the signal that a distance is wrong; and correcting the range table
+later can be replayed against every race without destroying manual choices.
+
+A manual override is **never** silently replaced. Re-running classification updates
+`auto_category_id` only; `race_category_id` moves only if `classification_source = auto`.
+
+Races with no recorded distances (manual entry only, §10) stay `unclassified` rather
+than being forced into a bucket. The user can pick a category by hand, which sets
+`classification_source = manual`.
+
+### UI
+
+The race form shows the category as a resolved value with its provenance —
+"Olympic · auto from measured distances" — and a picker to override. Overridden races get
+a small revert affordance back to the automatic value. Nothing about this is a modal or
+a wizard; it is one line on an existing form.
+
+---
+
+## 10. Partial Data and Drafts
+
+Nothing should require a complete record to be saved. Entering a race with only a name
+and a date must work, as must entering official splits without a total time, or a total
+time with no splits.
+
+### Principle
+
+**Validation belongs at the point of use, not the point of save.** The database enforces
+only what is structurally necessary; everything else is nullable and checked when a
+feature actually needs the value.
+
+### What is actually required
+
+| Table | Required | Everything else |
+|---|---|---|
+| `Race` | `user_id`, `date` | nullable — including `name`, which defaults to `"Untitled race"` |
+| `OfficialResult` | `race_id` | all times and placings nullable — but `total_time` is **always filled when derivable**, see below |
+| `RaceFueling` | `race_id`, `segment` | nullable |
+| `RecordedActivity` | `race_id`, `segment`, `start_time` | as already specified |
+| `Gear` | `user_id`, `name`, `kind` | nullable |
+
+`Race.date` stays required because the timeline is ordered by it and a dateless race has
+nowhere to appear. Import fills it; the manual form defaults it to today. This is the one
+place a value is forced, and it is forced to something correctable rather than blocking
+the save.
+
+**`total_time` is required in spirit, never in the form.** A race result without a total
+is incomplete, but the user must never be blocked from saving because they typed the five
+splits and not their sum. So:
+
+- Entering all of swim / T1 / bike / T2 / run **computes** `total_time` on write and sets
+  `total_is_derived`. Nothing to type, nothing to block on.
+- The column is nullable *at rest* only so a half-entered result can still be saved —
+  three splits and nothing else has no derivable total, and refusing that save would undo
+  §10 entirely. `completeness` reports the result as incomplete until a total exists.
+- A typed total is **never overwritten** by derivation. If a typed total and the five
+  splits disagree by more than 5 s — chip timing rounds, and transitions are sometimes
+  folded into adjacent legs — the mismatch is surfaced next to the field rather than
+  silently resolved in either direction.
+
+That is the reconciliation between "total should not be null" and "everything must be
+partially saveable": it is never left null when the data to compute it exists, and the one
+state where it stays null is explicitly labelled as unfinished.
+
+### Derivation, not requirement
+
+Missing values are derived where they can be, and the derivation is marked as such:
+
+- `total_time` absent but all five splits present → sum them, flag `total_is_derived`.
+- One split absent but `total_time` and the other four present → the remainder is that
+  split, same flag.
+- Neither derivable → the field simply reads as "—", not zero. **Nothing is ever
+  displayed as `0:00` because it is unknown**, which is the failure mode that makes
+  partial data feel broken.
+
+### Completeness, surfaced not enforced
+
+Each race exposes a computed `completeness` object on read: which fields are missing,
+grouped by what they unlock.
+
+```json
+{
+  "official_result": {"missing": ["t1_time", "age_group_place"], "usable": true},
+  "fueling":         {"missing": ["run"], "usable": true},
+  "classification":  {"missing": ["recorded_distances"], "usable": false},
+  "comparison":      {"usable": true}
+}
+```
+
+The detail view renders this as a quiet checklist, not a warning banner — a race missing
+its age-group placing is not in an error state, it is just a race with an unknown placing.
+
+### API and form behaviour
+
+- `PATCH /races/{id}` and the other write endpoints accept **any subset of fields**.
+  Pydantic write models use `Optional` throughout with `exclude_unset` semantics, so
+  omitting a field leaves it alone and explicitly sending `null` clears it. Those two
+  cases must stay distinguishable.
+- Forms **autosave per field on blur** rather than gating behind a submit button. No
+  form-level validation gate; per-field validation only rejects genuinely invalid input
+  (a negative time), never absence.
+- Aggregates in `/stats/summary` skip nulls and report the denominator: "412 km across
+  9 of 11 races" rather than silently averaging over missing data.
+
+### Consequences elsewhere
+
+Partial data has to be handled by every consumer, and two are worth calling out:
+
+- **Comparison (§11)** must render with either side incomplete — a missing fueling row
+  shows as unknown, not as zero carbs, which would read as "took nothing".
+- **Classification (§9)** needs recorded distances; without them the race stays
+  `unclassified` rather than defaulting to a category.
+
+---
+
+## 11. Comparison View
+
+Two races side by side at `/compare?a=<id>&b=<id>`, reachable from a "compare" action on
+any race card or detail view.
+
+### What can be compared
+
+Only races in the **same category** (§9). Different categories are excluded from the
+picker rather than warned about after the fact — a Sprint against a Long course produces
+a chart whose every number is meaningless.
+
+Within a category, distances still differ — the fixtures show 33 746 m and 40 570 m bikes
+in nominally comparable races. That is not a reason to block the comparison; it is a
+reason to **say so prominently**, which the conditions panel does.
+
+Two `custom` races are comparable when each segment's distance is within ±10 % of the
+other; otherwise the picker excludes them.
+
+### Layout
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Stutensee Olympic          2026-08-09  │  Karlsruhe    2026-07-11   │
+│  4:52:31                                │  5:12:04        +19:33     │
+├──────────────────────────────────────────────────────────────────────┤
+│  Δ  swim −0:42 │ T1 +1:12 │ bike −8:20 │ T2 −0:05 │ run −11:38       │
+├──────────────────────────────────────────────────────────────────────┤
+│   GAP TO REFERENCE                                                   │
+│  0:00 ●───●───●────────●────────●───●───────●────────●  reference    │
+│            ╲                                                         │
+│  2:00       ●────●                teal above 0 = faster              │
+│                   ╲────●────●                                        │
+│  4:00                        ╲─────●──────●  +3:42                   │
+│       Start Swim T1    bike       T2     run      Finish             │
+├──────────────────────────────────────────────────────────────────────┤
+│  CONDITIONS & COURSE                                                 │
+│  ⚠ bike 40.5 km vs 33.7 km (+20 %)   ⚠ +22 m vs +558 m elevation     │
+│    29 °C / 61 % vs 18 °C / 78 %      race bike vs training bike      │
+├──────────────────────────────────────────────────────────────────────┤
+│  FUELING                                                             │
+│  bike  90 g · 45 g/h   vs   60 g · 33 g/h        +30 g               │
+│  run   30 g · 34 g/h   vs   20 g · 21 g/h        +10 g               │
+│  A: 3× Maurten 160, 1× gel     B: 2× Maurten 160                     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### The gap chart
+
+The reference image (TriRating's Ironman Hamburg progression chart) settles the form, and
+it is better than the two-panel design this section previously carried. **One panel, not
+two.** The reference race is pinned flat at zero and the other race is drawn as its gap
+from it — so the residual *is* the chart rather than a supporting strip beneath an
+absolute-time plot that nobody reads.
+
+```
+        Start   Swim   T1        bike ─────────    T2      run ────────   Finish
+  0:00 ─●───────●──────●──────────●────────●────────●───────●──────●────────●──  reference
+         ╲                                                                        (Karlsruhe
+   1:00   ●──────╲                          teal above 0 = faster                  2026-07-11)
+                  ╲────●                                                          
+   2:00             ▔▔▔▔ ╲                                                        
+                          ●────────●        brick below 0 = slower                
+   3:00                              ╲──────●──────●                              
+                                                    ╲──────●  ← Stutensee, +3:42
+```
+
+**Y axis — time behind the reference, increasing downward.** Inverted relative to a normal
+time axis, matching the reference image: falling away visually means losing time, which is
+how the sport talks about it. The comparison race crosses above zero wherever it was
+ahead.
+
+**X axis — discrete checkpoints, not continuous distance.** The reference chart uses
+`Start · Swim · T1 · 50k · Lap 1 · 140k · T2 · Lap 1–3 · Finish`, and that is exactly the
+granularity real timing data has. Ours:
+
+- **Segment boundaries are always checkpoints** — Start, Swim, T1, T2, Finish. These exist
+  for every race, including one entered by hand with only official splits.
+- **Intra-segment checkpoints come from laps** where both races have them (5 km on the
+  bike, 1 km on the run, per §3).
+- **When the two races' segment distances agree within 5 %**, checkpoints are placed at
+  absolute distances and labelled that way — `20k`, `40k`, `Lap 2` — which is what makes
+  the reference chart legible.
+- **When they don't** (33.7 km against 40.5 km), checkpoints fall back to even fractions
+  of each segment, labelled with the reference race's distance and marked as normalised.
+  The conditions panel states the distance difference outright, so the axis never quietly
+  misleads.
+
+Between checkpoints the line is straight — piecewise linear, as in the reference. No
+smoothing: an interpolated curve would imply per-second knowledge the checkpoint data
+doesn't have.
+
+**Fill.** The area between the line and zero is filled as a diverging encoding — teal
+where the race was faster, brick where slower, with the zero line itself in neutral gray.
+That is the polarity job from the palette rules, and it is why the fill reuses the sport
+hues rather than introducing red/green: red/green is both off-palette and the worst
+possible choice for colour-blind readers.
+
+**Invariant.** The gap at each segment boundary equals the cumulative split delta, so the
+Δ strip at the top of the page is literally this curve sampled at five points. If they
+ever disagree, one of them is wrong.
+
+**Degradation.** A race with no recorded stream renders from official splits alone — five
+checkpoints instead of twenty, visibly coarser, with a note saying so. The comparison
+still works.
+
+**Accessibility.** Two series where one is a flat baseline, so the title names them and
+the zero line is labelled with the reference race rather than shipping a legend box; the
+comparison line is direct-labelled at its right end with the finishing gap. A crosshair
+tooltip gives both races' elapsed times and the gap at the hovered checkpoint, and the
+same data is available as a checkpoint table — so nothing is conveyed by colour alone.
+A control swaps which race is the reference.
+
+**More than two races.** The reference image plots fourteen. The shape generalises for
+free, but the colour does not: N races need a validated categorical palette rather than
+one diverging fill, and the fill has to go. Out of scope for v1, noted so the chart
+component isn't built in a way that forecloses it.
+
+### Fueling comparison
+
+Per segment, three things:
+
+- **Absolute carbs** and the delta.
+- **Rate in g/h**, derived from the segment's elapsed time. This is the number that
+  actually transfers between races of different lengths — 60 g over a 70-minute bike is
+  not the same fuelling as 60 g over a 50-minute bike, and the absolute figure hides that.
+- **Products**, listed side by side with items unique to each race marked, plus the
+  free-text notes.
+
+Unknown is rendered as "—", never as zero (§10). A race with no fueling row recorded is
+not a race where nothing was eaten.
+
+The panel deliberately stops at presentation. It does not compute a correlation between
+carbs and pace, and does not claim one caused the other: two races is not a sample, and
+a tool that implies otherwise from `n = 2` is worse than one that just shows the numbers.
+
+### Conditions and course panel
+
+A flat list of the settings that differ, with material differences promoted to the top
+and marked. Thresholds: distance ±5 %, elevation ±50 m, temperature ±5 °C, humidity
+±15 pp, plus any change of gear or of primary recording device.
+
+Showing only differences, rather than a full spec table, is the point — the reader wants
+to know what was not like-for-like, and an exhaustive table buries that in rows of
+identical values.
+
+---
+
+## 12. Open Decisions / Deferred
 
 Carried forward from both source plans, plus seams that surfaced while merging them.
 
