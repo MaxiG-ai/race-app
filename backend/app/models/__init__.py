@@ -3,6 +3,8 @@ every mapped class on `app.db.Base.metadata` — required by Alembic's `env.py` 
 by anything constructing a fresh schema (e.g. tests)."""
 
 from app.models.enums import (
+    CategoryKind,
+    ClassificationSource,
     GearAssignedBy,
     GearKind,
     RaceType,
@@ -15,6 +17,7 @@ from app.models.enums import (
 from app.models.gear import ActivityGear, Gear, GearDevice
 from app.models.lap_split import LapSplit
 from app.models.race import OfficialResult, Race
+from app.models.race_category import RaceCategory
 from app.models.race_fueling import RaceFueling
 from app.models.recorded_activity import RecordedActivity
 from app.models.upload import Upload
@@ -30,6 +33,9 @@ __all__ = [
     "OfficialResult",
     "Race",
     "RaceFueling",
+    "CategoryKind",
+    "ClassificationSource",
+    "RaceCategory",
     "RaceType",
     "RecordedActivity",
     "Segment",

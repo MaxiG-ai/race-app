@@ -96,7 +96,7 @@ def race_id(client: TestClient, db: Session) -> int:
     assert response.status_code == 200
     created = client.post(
         "/api/races",
-        json={"name": "Total time race", "date": "2026-08-09", "race_type": "olympic"},
+        json={"name": "Total time race", "date": "2026-08-09"},
     )
     assert created.status_code == 201, created.text
     return created.json()["id"]

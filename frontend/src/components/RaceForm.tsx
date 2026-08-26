@@ -4,10 +4,8 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { ApiError } from '@/api/client'
 import { useRefreshWeather, useUpdateRace } from '@/api/races'
-import { formatNumber, RACE_TYPE_LABEL } from '@/lib/format'
-import type { RaceDetail, RaceType, RaceUpdate } from '@/types'
-
-const RACE_TYPE_VALUES = ['sprint', 'olympic', 'half_iron', 'full_iron', 'custom'] as const
+import { formatNumber } from '@/lib/format'
+import type { RaceDetail, RaceUpdate } from '@/types'
 
 function isBlankOrNumeric(v: string) {
   return v.trim() === '' || !Number.isNaN(Number(v))
@@ -16,7 +14,6 @@ function isBlankOrNumeric(v: string) {
 const raceFormSchema = z.object({
   name: z.string().trim().min(1, 'Enter a race name.'),
   date: z.string().min(1, 'Enter a date.'),
-  race_type: z.enum(RACE_TYPE_VALUES),
   location_name: z.string(),
   location_lat: z.string().refine(isBlankOrNumeric, 'Enter a valid latitude.'),
   location_lng: z.string().refine(isBlankOrNumeric, 'Enter a valid longitude.'),
@@ -46,7 +43,6 @@ export function RaceForm({ race }: { race: RaceDetail }) {
     defaultValues: {
       name: race.name,
       date: race.date,
-      race_type: race.race_type as (typeof RACE_TYPE_VALUES)[number],
       location_name: race.location_name ?? '',
       location_lat: race.location_lat != null ? String(race.location_lat) : '',
       location_lng: race.location_lng != null ? String(race.location_lng) : '',
@@ -60,7 +56,6 @@ export function RaceForm({ race }: { race: RaceDetail }) {
     const body: RaceUpdate = {
       name: values.name.trim(),
       date: values.date,
-      race_type: values.race_type as RaceType,
       location_name: values.location_name.trim() === '' ? null : values.location_name.trim(),
       location_lat: values.location_lat.trim() === '' ? null : Number(values.location_lat),
       location_lng: values.location_lng.trim() === '' ? null : Number(values.location_lng),
@@ -104,22 +99,6 @@ export function RaceForm({ race }: { race: RaceDetail }) {
           {errors.date && <p className="mt-1 text-xs text-run">{errors.date.message}</p>}
         </div>
 
-        <div>
-          <label htmlFor="race-type" className="mb-1 block text-xs text-ink/70">
-            Type
-          </label>
-          <select
-            id="race-type"
-            className="rounded border border-hairline bg-bg px-2 py-1.5 text-sm"
-            {...register('race_type')}
-          >
-            {RACE_TYPE_VALUES.map((value) => (
-              <option key={value} value={value}>
-                {RACE_TYPE_LABEL[value]}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
 
       <div>

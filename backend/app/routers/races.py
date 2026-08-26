@@ -34,6 +34,7 @@ from app.models import (
     Segment,
     User,
 )
+from app.models.enums import ClassificationSource
 from app.schemas.activity import (
     LapSplitRead,
     RaceTrackResponse,
@@ -47,6 +48,7 @@ from app.schemas.gear import ActivityGearRead
 from app.schemas.race import (
     OfficialResultRead,
     OfficialResultUpsert,
+    RaceCategoryRead,
     RaceCreate,
     RaceDetail,
     RaceListItem,
@@ -55,6 +57,7 @@ from app.schemas.race import (
     RaceUpdate,
 )
 from app.services.aggregates import RACE_SEGMENT_ORDER, RaceAggregates, race_aggregates_by_id
+from app.services.classification import apply_classification
 from app.services.geo import simplify_for_precision, track_bounds
 from app.services.official_result import (
     SPLIT_FIELDS,
@@ -79,15 +82,16 @@ def _segment_sort_key(segment: Segment) -> int:
 
 
 def _race_list_item(race: Race, aggregates: RaceAggregates) -> RaceListItem:
-    # Single badge for now: a human label for race_type ("half_iron" ->
-    # "Half Iron"). The RaceCard mockup (§5) shows one badge per card; nothing
-    # else in the schema (PR, DNF, ...) exists yet to add a second one.
-    badge = race.race_type.value.replace("_", " ").title()
+    # Single badge for now: the category's label, or "Unclassified" when the distances
+    # didn't match one (§9) — which is information, not an empty state. The RaceCard
+    # mockup (§5) shows one badge per card; nothing else in the schema (PR, DNF, ...)
+    # exists yet to add a second one.
+    badge = race.category.label if race.category else "Unclassified"
     return RaceListItem(
         id=race.id,
         name=race.name,
         date=race.date,
-        race_type=race.race_type,
+        category=RaceCategoryRead.model_validate(race.category) if race.category else None,
         location_name=race.location_name,
         badges=[badge],
         total_official_time_s=aggregates.total_official_time_s,
@@ -211,8 +215,22 @@ def update_race(race_id: int, payload: RaceUpdate, db: DbSession, user: CurrentU
         for field_name, value in updates.items()
     )
 
+    # Setting a category by hand is an override: it pins the choice so the classifier
+    # stops moving it. Explicitly clearing it hands control back, which means re-running
+    # the classifier rather than leaving the race stuck with no category (§9).
+    override_changed = "race_category_id" in updates
+    if override_changed:
+        race.classification_source = (
+            ClassificationSource.MANUAL
+            if updates["race_category_id"] is not None
+            else ClassificationSource.UNCLASSIFIED
+        )
+
     for field_name, value in updates.items():
         setattr(race, field_name, value)
+
+    if override_changed and updates["race_category_id"] is None:
+        apply_classification(db, race)
 
     if changed_weather_input:
         enrich_weather(db, race, overwrite=True)
@@ -261,6 +279,21 @@ def upsert_official_result(
     db.commit()
     db.refresh(existing)
     return OfficialResultRead.model_validate(existing)
+
+
+@router.post("/{race_id}/classify", response_model=RaceRead)
+def reclassify_race(race_id: int, db: DbSession, user: CurrentUser) -> RaceRead:
+    """Re-run classification from the current primary recordings.
+
+    Always refreshes `auto_category`; only moves the assigned category when the user has
+    not overridden it. Useful after correcting a distance, switching which recording is
+    primary, or editing the category table itself.
+    """
+    race = get_owned_race(db, user, race_id)
+    apply_classification(db, race)
+    db.commit()
+    db.refresh(race)
+    return RaceRead.model_validate(race)
 
 
 @router.put("/{race_id}/fueling", response_model=list[RaceFuelingRead])

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import RaceType, Segment
+from app.models.enums import CategoryKind, ClassificationSource, Segment
 from app.schemas.activity import RecordedActivityRead
 from app.schemas.fueling import RaceFuelingRead
 
@@ -44,18 +44,41 @@ class OfficialResultUpsert(BaseModel):
     age_group_place: int | None = None
 
 
+class RaceCategoryRead(BaseModel):
+    """A row of the distance-category table (§9)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    key: str
+    label: str
+    kind: CategoryKind
+    sort_order: int
+    swim_min_m: float | None
+    swim_max_m: float | None
+    bike_min_m: float | None
+    bike_max_m: float | None
+    run_min_m: float | None
+    run_max_m: float | None
+    tolerance_pct: float
+
+
 class RaceBase(BaseModel):
     name: str
     date: date_
     location_name: str | None = None
     location_lat: float | None = None
     location_lng: float | None = None
-    race_type: RaceType
     notes: str | None = None
 
 
 class RaceCreate(RaceBase):
-    """`POST /races` — manual race creation."""
+    """`POST /races` — manual race creation.
+
+    No category: it is inferred from the measured distances once activities land (§9).
+    A race created by hand with no recordings stays unclassified until either an import
+    arrives or the user picks a category themselves.
+    """
 
 
 class RaceUpdate(BaseModel):
@@ -67,8 +90,10 @@ class RaceUpdate(BaseModel):
     location_name: str | None = None
     location_lat: float | None = None
     location_lng: float | None = None
-    race_type: RaceType | None = None
     notes: str | None = None
+    #: Setting this is a manual override: it pins the category and stops the classifier
+    #: from moving it. Passing null clears the override and hands control back (§9).
+    race_category_id: int | None = None
 
 
 class RaceRead(RaceBase):
@@ -76,6 +101,12 @@ class RaceRead(RaceBase):
 
     id: int
     user_id: int
+    category: RaceCategoryRead | None = None
+    #: What the classifier chose, kept even when overridden — so the UI can show
+    #: "you set Mitteldistanz; the measurements say Kurzdistanz".
+    auto_category: RaceCategoryRead | None = None
+    classification_source: ClassificationSource
+    classification_detail: dict | None = None
     weather_temp_c: float | None
     weather_humidity_pct: float | None
     weather_conditions: str | None
@@ -101,7 +132,7 @@ class RaceListItem(BaseModel):
     id: int
     name: str
     date: date_
-    race_type: RaceType
+    category: RaceCategoryRead | None = None
     location_name: str | None
     badges: list[str] = []
     total_official_time_s: int | None = None

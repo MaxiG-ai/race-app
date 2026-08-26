@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.auth.deps import current_user, get_owned_race
 from app.config import settings
 from app.db import get_db
-from app.models.enums import RaceType, Sport, UploadKind, UploadSource, UploadStatus
+from app.models.enums import Sport, UploadKind, UploadSource, UploadStatus
 from app.models.race import Race
 from app.models.recorded_activity import RecordedActivity
 from app.models.upload import Upload
@@ -222,7 +222,7 @@ def _create_race_from_multisport(
     db: Session, *, user: User, upload: Upload, parsed: ParsedFile
 ) -> Race:
     lat, lng = persistence.race_location_from_sessions(parsed.sessions)
-    # "name and race_type are left for the user" (§3 step 5) -- neither column is
+    # "name is left for the user" (§3 step 5) -- the column is
     # nullable, so a placeholder is stored (rather than the field being left
     # unset) and the frontend is expected to prompt for the real values on the
     # draft race's first edit.
@@ -233,7 +233,6 @@ def _create_race_from_multisport(
         location_name=None,
         location_lat=lat,
         location_lng=lng,
-        race_type=RaceType.CUSTOM,
     )
     db.add(race)
     db.flush()

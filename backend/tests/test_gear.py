@@ -17,7 +17,6 @@ from app.models import (
     GearDevice,
     GearKind,
     Race,
-    RaceType,
     RecordedActivity,
     Segment,
     UploadSource,
@@ -45,7 +44,7 @@ def _login(client: TestClient, email: str = EMAIL) -> None:
 
 
 def _make_race(db: Session, *, owner: User, name: str = "Test Race") -> Race:
-    race = Race(user_id=owner.id, name=name, date=date(2026, 6, 21), race_type=RaceType.OLYMPIC)
+    race = Race(user_id=owner.id, name=name, date=date(2026, 6, 21))
     db.add(race)
     db.commit()
     db.refresh(race)

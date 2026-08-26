@@ -18,6 +18,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.models import RecordedActivity, Segment, UploadSource
+from app.services.classification import apply_classification
 from app.services.geo import PRECISION_TOLERANCES_M
 from tests import factories
 
@@ -51,13 +52,17 @@ def _full_race(db: Session, *, owner, **race_kwargs):
     race = factories.make_race(db, owner=owner, **race_kwargs)
     factories.make_primary_activities(db, race=race)
     factories.make_official_result(db, race=race)
+    # Mirrors the import pipeline, which classifies once primacy settles (§9). Without
+    # it a factory race would look unclassified in a way a real imported one never is.
+    apply_classification(db, race)
+    db.commit()
     return race
 
 
 # --- GET /races (list) ------------------------------------------------------ #
 
 
-def test_list_races_happy_path(client: TestClient, db: Session) -> None:
+def test_list_races_happy_path(client: TestClient, db: Session, categories) -> None:
     user = factories.make_user(db)
     _login(client, user.email)
     _full_race(db, owner=user, name="Stutensee", race_date=date(2026, 6, 21))
@@ -71,7 +76,7 @@ def test_list_races_happy_path(client: TestClient, db: Session) -> None:
     assert body["offset"] == 0
     item = body["items"][0]
     assert item["name"] == "Stutensee"
-    assert item["badges"] == ["Olympic"]
+    assert item["badges"] == ["Kurzdistanz"]
     assert item["total_official_time_s"] == 9763
     assert item["total_recorded_time_s"] == sum(
         t["elapsed"] for t in factories.SEGMENT_TOTALS.values()
@@ -237,7 +242,6 @@ def test_create_race(client: TestClient, db: Session) -> None:
         json={
             "name": "Roth",
             "date": "2026-07-12",
-            "race_type": "full_iron",
             "location_name": "Roth, Germany",
         },
     )
@@ -245,7 +249,9 @@ def test_create_race(client: TestClient, db: Session) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["name"] == "Roth"
-    assert body["race_type"] == "full_iron"
+    # No category yet: a hand-created race has no measured distances to classify from.
+    assert body["category"] is None
+    assert body["classification_source"] == "unclassified"
 
 
 def test_patch_race_leaves_weather_untouched_when_no_weather_input_changed(

@@ -29,7 +29,33 @@ class Sport(str, enum.Enum):
     OTHER = "other"
 
 
+class CategoryKind(str, enum.Enum):
+    """What kind of category a `RaceCategory` row is.
+
+    The published DTU list mixes three things. Age classes (Schüler, Jugend, Junioren)
+    describe the *athlete*, and their distances overlap the open categories almost
+    entirely — Junioren is 0.75-1.5 / 20-40 / 5-10 against Kurzdistanz's 1.5 / 40 / 10 —
+    so a course cannot tell you which applies. Mixed Relay is a team format. Only
+    `DISTANCE` rows are eligible for automatic classification (§9).
+    """
+
+    DISTANCE = "distance"
+    AGE_CLASS = "age_class"
+    RELAY = "relay"
+
+
+class ClassificationSource(str, enum.Enum):
+    """Where a race's assigned category came from."""
+
+    AUTO = "auto"
+    MANUAL = "manual"
+    UNCLASSIFIED = "unclassified"
+
+
 class RaceType(str, enum.Enum):
+    """Superseded by `RaceCategory` (§9). Retained only so the migration that backfills
+    categories can read the old column; no application code should use it."""
+
     SPRINT = "sprint"
     OLYMPIC = "olympic"
     HALF_IRON = "half_iron"

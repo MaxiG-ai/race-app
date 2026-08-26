@@ -13,6 +13,8 @@ import app.models  # noqa: F401  (registers every mapped class on Base.metadata)
 from app.config import settings
 from app.db import Base, get_db
 from app.main import app
+from app.models import RaceCategory
+from app.services.categories import CATEGORY_SEEDS
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -110,3 +112,32 @@ def client(db: Session) -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
+def categories(db: Session) -> list[RaceCategory]:
+    """Seed the DTU distance categories.
+
+    The schema here is built with `create_all`, which skips the migration that seeds
+    them — so any test touching classification has to ask for this explicitly.
+    """
+    rows = [
+        RaceCategory(
+            key=seed.key,
+            label=seed.label,
+            kind=seed.kind,
+            sort_order=seed.sort_order,
+            swim_min_m=seed.swim[0],
+            swim_max_m=seed.swim[1],
+            bike_min_m=seed.bike[0],
+            bike_max_m=seed.bike[1],
+            run_min_m=seed.run[0],
+            run_max_m=seed.run[1],
+            tolerance_pct=10.0,
+            is_active=True,
+        )
+        for seed in CATEGORY_SEEDS
+    ]
+    db.add_all(rows)
+    db.commit()
+    return rows

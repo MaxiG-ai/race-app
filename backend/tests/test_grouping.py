@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 from app.auth.password import hash_password
 from app.models import (
     Race,
-    RaceType,
     RecordedActivity,
     Segment,
     Sport,
@@ -493,7 +492,7 @@ def test_attach_backfills_a_missing_leg(
 ) -> None:
     user = _make_user(db)
     _login(client)
-    race = Race(user_id=user.id, name="Sprint", date=date(2026, 6, 21), race_type=RaceType.SPRINT)
+    race = Race(user_id=user.id, name="Sprint", date=date(2026, 6, 21))
     db.add(race)
     db.commit()
     db.refresh(race)
@@ -578,7 +577,7 @@ def test_second_user_cannot_see_first_users_uploads_in_tray(
 def test_attach_to_someone_elses_race_404s(client: TestClient, db: Session) -> None:
     owner = _make_user(db, email="owner@example.com")
     _make_user(db, email="intruder@example.com")
-    race = Race(user_id=owner.id, name="Sprint", date=date(2026, 6, 21), race_type=RaceType.SPRINT)
+    race = Race(user_id=owner.id, name="Sprint", date=date(2026, 6, 21))
     db.add(race)
     db.commit()
     db.refresh(race)

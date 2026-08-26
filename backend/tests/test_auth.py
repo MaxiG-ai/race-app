@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.auth.deps import get_owned_race
 from app.auth.password import hash_password
 from app.auth.tokens import create_access_token, create_refresh_token
-from app.models import Race, RaceType, User
+from app.models import Race, User
 from app.routers.auth import login_rate_limiter
 
 EMAIL = "athlete@example.com"
@@ -41,7 +41,7 @@ def _make_user(
 
 def _make_race(db: Session, *, owner: User) -> Race:
     race = Race(
-        user_id=owner.id, name="Test Race", date=date(2026, 6, 21), race_type=RaceType.OLYMPIC
+        user_id=owner.id, name="Test Race", date=date(2026, 6, 21)
     )
     db.add(race)
     db.commit()

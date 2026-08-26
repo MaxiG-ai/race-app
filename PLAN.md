@@ -1030,10 +1030,23 @@ than being forced into a bucket. The user can pick a category by hand, which set
 
 ### UI
 
-The race form shows the category as a resolved value with its provenance —
-"Olympic · auto from measured distances" — and a picker to override. Overridden races get
-a small revert affordance back to the automatic value. Nothing about this is a modal or
-a wizard; it is one line on an existing form.
+`CategoryField` on the race edit page shows the resolved category, one line of
+provenance, and a picker to override. Provenance is the part that earns its place:
+
+- auto → "Calculated from the measured distances."
+- manual → "Set by you." plus, when the inference disagrees, "The measured distances
+  suggest Kurzdistanz." — that disagreement is usually the first sign a *distance* is
+  wrong, not a category.
+- unclassified → the reason, e.g. "No band matched — closest is kurz, but the bike is
+  15.6% short of it."
+
+An overridden race gets a "Use the calculated category" link back. Clearing the override
+re-runs the classifier rather than leaving the race with no category at all.
+
+*(Implemented in M8. The old free-choice `race_type` enum is gone: the migration maps
+`sprint→sprint`, `olympic→kurz`, `half_iron→mittel`, `full_iron→lang` as MANUAL — the
+user picked those explicitly — and leaves `custom` unclassified for the classifier to
+judge from measurements.)*
 
 ---
 
@@ -1306,4 +1319,18 @@ Carried forward from both source plans, plus seams that surfaced while merging t
 - **Garmin `time_in_zone` and cycling dynamics** — L/R balance, torque effectiveness,
   pedal smoothness and HR-zone distributions are all parsed into `raw_data` but not
   modelled or surfaced. Cheap to promote later if they turn out to be interesting.
+- **Race photos** — upload competition photos per race, and show them on the timeline
+  card *in place of* the course map when one exists. The map is the better default for a
+  race you're analysing; a photo is the better one for a race you're remembering, and
+  only the user knows which a given race is. Needs: a `RacePhoto` table (owner via
+  `race_id`), object storage on the same volume as the retained FIT originals (§8),
+  thumbnailing, and a decision on ordering when several exist. The timeline swap is the
+  cheap part; storage, EXIF stripping and backup sizing are the real scope.
+- **Rich-text race notes** — `Race.notes` is plain text today. Formatting (headings,
+  lists, emphasis, links) would make it a usable race report rather than a scratch field.
+  The catch is that storing HTML means sanitising it on the way in *and* on the way out —
+  it is rendered in a page that also shows the user's own data, so an unsanitised note is
+  a stored-XSS hole even in a single-user app. Prefer storing Markdown and rendering it,
+  or a constrained editor writing a known-safe subset; either way the sanitiser is the
+  design decision, not the editor.
 - **CI/CD** — manual `docker compose up -d --build` for v1.

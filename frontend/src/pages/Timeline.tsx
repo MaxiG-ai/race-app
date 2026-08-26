@@ -180,7 +180,7 @@ function NewRaceButton() {
       String(today.getDate()).padStart(2, '0'),
     ].join('-')
     createRace.mutate(
-      { name: 'Untitled race', date, race_type: 'custom' },
+      { name: 'Untitled race', date },
       { onSuccess: (race) => navigate(`/races/${race.id}/edit`) },
     )
   }
