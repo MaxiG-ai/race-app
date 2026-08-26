@@ -1,0 +1,21 @@
+# Local development: Postgres only. The API and frontend run on the host with
+# hot reload. Production is a separate compose file (see PLAN.md §8).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: race
+      POSTGRES_PASSWORD: race
+      POSTGRES_DB: race
+    ports:
+      - "5432:5432"
+    volumes:
+      - race_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U race -d race"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  race_pgdata:
