@@ -83,3 +83,14 @@ A race history has no other source once the watch data ages out, so back it up.
 
 `git pull && docker compose ... up -d --build`. No CI/CD is needed to deploy. CI for tests
 and lint on pull requests is worth adding once the repository is public.
+
+### Coming from v1
+
+The rewrite starts a fresh migration history (`0001_initial_schema`) and doesn't migrate v1
+data: v1 was multi-tenant and its schema doesn't map onto the single-owner one. A v1
+database stops the app at startup with Alembic's "Can't locate revision" error; nothing is
+changed or lost. To move over:
+
+1. Back up (`scripts/backup.sh`), and keep your original FIT files.
+2. `docker compose down -v` removes the old database and uploads volumes.
+3. `docker compose up -d --build`, `create-owner`, then re-upload the FIT files.

@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-race}:${POSTGRES_PASSWORD:-race}@db:5432/${POSTGRES_DB:-race}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-race}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-race}
     ports:
       - "${APP_PORT:-127.0.0.1:8000}:8000"
     volumes:
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-race}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-race}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-race}
     volumes:
       - pgdata:/var/lib/postgresql/data
