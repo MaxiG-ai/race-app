@@ -265,24 +265,26 @@ def receive(db: Session, filename: str | None, data: bytes) -> Outcome:
         return Outcome(filename, "failed", "This is not a FIT file.")
 
     content_hash = hashlib.sha256(data).hexdigest()
-    existing = db.scalar(select(Upload).where(Upload.content_hash == content_hash))
-    if existing:
+    upload = db.scalar(select(Upload).where(Upload.content_hash == content_hash))
+    if upload is not None and upload.status is not UploadStatus.FAILED:
         return Outcome(
             filename,
             "duplicate",
-            f"Identical to an upload you already have ({existing.filename or 'unnamed'}, "
-            f"uploaded {existing.uploaded_at:%d %b %Y}).",
-            upload_id=existing.id,
-            race_id=existing.race_id,
+            f"Identical to an upload you already have ({upload.filename or 'unnamed'}, "
+            f"uploaded {upload.uploaded_at:%d %b %Y}).",
+            upload_id=upload.id,
+            race_id=upload.race_id,
         )
-
-    upload = Upload(filename=filename, content_hash=content_hash, status=UploadStatus.FAILED)
-    db.add(upload)
-    db.flush()
-    path = _stored_path(upload.id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    upload.stored_path = str(path)
+    if upload is None:
+        upload = Upload(filename=filename, content_hash=content_hash, status=UploadStatus.FAILED)
+        db.add(upload)
+        db.flush()
+        path = _stored_path(upload.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        upload.stored_path = str(path)
+    # else: an identical file failed before. Parse it again: the parser may have improved,
+    # and the owner needs the real error, not "you already have this".
 
     try:
         parsed = parse_fit(data)

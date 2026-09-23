@@ -185,3 +185,17 @@ def test_private_real_files_parse():
     for path in PRIVATE.glob("*.fit"):
         result = parse_fit(path.read_bytes())
         assert result.sessions, path.name
+
+
+def test_identical_copy_of_a_failed_upload_is_retried_not_called_duplicate(owner, db):
+    """Issue #5: Strava's swim and run downloads are the same file. When that file failed
+    to import, the second copy must report the failure, not "you already have this"."""
+    broken = fixture_bytes("apple_multisport.fit")[:14] + b"\x00" * 40
+    first, second = (
+        owner.post("/api/uploads", files=[("files", (name, broken))]).json()[0]
+        for name in ("swim.fit", "run.fit")
+    )
+    assert first["result"] == second["result"] == "failed"
+    assert second["message"] == first["message"] and "Could not read" in second["message"]
+    assert second["upload_id"] == first["upload_id"]
+    assert db.scalar(select(func.count()).select_from(Upload)) == 1
