@@ -1,55 +1,39 @@
 # race-app — working conventions
 
-Personal triathlon racing-history web app. **`PLAN.md` is the spec** — read the relevant
-section before implementing; it encodes hard-won detail about real FIT files that is not
-re-derivable from the code.
+A race-history web app: one athlete per instance, run privately or published on your own
+domain with an owner-only edit mode. **`docs/` is the spec.** Start at `docs/README.md`,
+then read the feature file you are working on. `docs/reference/fit-files.md` holds
+hard-won detail about real FIT files that can't be worked out from the code.
 
-## Layout
+## The rewrite
 
-```
-backend/    uv project — FastAPI + SQLAlchemy 2.0 + Alembic + Pydantic v2
-frontend/   Vite + React 19 + TS + Tailwind v4 + TanStack Query
-```
+The app is being rebuilt nearly from scratch (see `docs/roadmap.md`):
 
-## Backend
+- **Backend:** Python 3.12+, run with `uv` (`uv add`, `uv run pytest`). Never pip, never a bare
+  venv. Small dependency set; every package justified in `docs/architecture.md`.
+- **Frontend:** plain HTML + CSS + ES-module JS, no build step, no framework. Leaflet
+  (vendored) is the only frontend library. Charts are hand-written SVG.
+- **Database:** PostgreSQL, always, including local runs.
+- Ruff, line length 100. JS modules start with `// @ts-check`. Design tokens are CSS
+  custom properties in `tokens.css`; never raw hex. Numeric columns get `.tnum`.
 
-- **uv for everything.** `uv add <pkg>`, `uv run pytest`, `uv run alembic ...`,
-  `uv run uvicorn app.main:app --reload`. Never pip, never a bare venv.
-- Python 3.12+. SQLAlchemy 2.0 style: `Mapped[...]` / `mapped_column`, `DeclarativeBase`
-  (`app.db.Base`). Pydantic v2 (`model_config = ConfigDict(from_attributes=True)`).
-- Line length 100, ruff (`uv run ruff check --fix . && uv run ruff format .`).
-- Postgres-specific types (`JSONB`, `ARRAY`) are fine — Postgres is the only target.
+The `backend/` (FastAPI/SQLAlchemy) and `frontend/` (React/Vite) trees are **v1** and
+are being replaced. Don't extend them. Their `§N` comments refer to the old, deleted
+`PLAN.md`.
 
-### Non-negotiables from the plan
+## Non-negotiables
 
-- **Durations are integer seconds; distances/elevation are metres; timestamps are UTC and
-  timezone-aware.** `Race.date` is a plain local date. Pace is derived on read, never stored.
-- **Tenancy (§4).** Three ownership roots: `Race.user_id`, `Upload.user_id`, `Gear.user_id`.
-  Everything else inherits through `race_id`. Every race lookup goes through
-  `get_owned_race(db, user, race_id)`, which raises **404** (not 403) for someone else's
-  race. No unscoped `SELECT ... FROM races` anywhere, aggregates included.
-- **Auth by default.** `current_user` is applied at *router* level, not per endpoint, so a
-  new endpoint is authenticated unless deliberately exempted (`/auth/login`, `/health`).
-- **Session totals over lap sums (§3 Traps 1).** Apple drops the trailing partial bike lap;
-  summing laps understates the bike by 3.7 km. Laps carry pacing shape only.
-- **Half-open `[start, end)` record bucketing (§3 Traps 3).** Sessions overlap sub-second.
-  Records matching no window are dropped *and counted* — not fatal (§3 Traps 4). A record
-  matching two windows is a bug and fails the import.
-- **Nothing device-specific may be inferred from the sport (§3 Traps 2).** Apple has run
-  power and no bike power; Garmin the reverse. Every segment carries `avg_power`.
-
-## Frontend
-
-- `npm run dev` / `npm run build`. Import alias `@/` → `src/`.
-- Design tokens live in `src/index.css` as Tailwind v4 `@theme` vars — use
-  `bg-bg text-ink border-hairline text-swim/bike/run`, never raw hex.
-- Numeric columns get the `.tnum` class (tabular numerals).
-- Types are generated, not hand-written: `npm run gen:api` → `src/types/api.d.ts`.
-- TanStack Query for all server state; no manual `useEffect` fetching.
-
-## Testing
-
-- `uv run pytest`. FIT parsing tests run against the five real fixtures in
-  `backend/tests/fixtures/` and assert the §3 traps directly.
-- Fixtures are **real, unanonymized** race data — see their README. The repo stays private.
-- DB-backed tests need Postgres (`docker compose up -d db`).
+- **Units:** durations are integer seconds; distances and elevation are metres; timestamps
+  are UTC and timezone-aware. `race.date` is a plain *local* date. Pace is derived on
+  read, never stored. Unknown is null and shows as "—", never 0.
+- **Access** (`docs/features/access-and-visibility.md`): one owner, no tenancy. Every
+  write needs the owner session, enforced at router level. Every race read goes
+  through `visible_race(s)`, which returns **404** for races the viewer can't see.
+  Public responses use explicit public shapes; never-public fields (uploads,
+  `raw_data`, serials) are never in them. New races start `is_public = false`.
+- **Session totals over lap sums** (fit-files Trap 1).
+- **Half-open, clamped `[start, end)` record bucketing** (Trap 3). Orphans are dropped
+  and counted (Trap 4); a record matching two windows fails the import.
+- **Nothing device-specific inferred from the sport** (Trap 2).
+- **No real personal recordings in the repository.** Tests use the synthetic fixtures;
+  real files go in `backend/tests/fixtures/private/` (gitignored).
