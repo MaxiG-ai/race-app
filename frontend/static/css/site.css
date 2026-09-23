@@ -1,0 +1,3 @@
+/* Site settings: one field per row, small autosave status underneath. */
+
+.status.error { color: var(--danger); }

@@ -1,0 +1,39 @@
+/* Timeline home page: stat strip + the spine (docs/design/visual-system.md#signature-element). */
+
+.stat-strip { margin-top: 0.25rem; }
+
+.timeline { position: relative; padding-left: 1.25rem; }
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.6rem;
+  bottom: 0.6rem;
+  width: 2px;
+  background: var(--hairline);
+}
+
+.timeline-row { position: relative; margin-bottom: 0.75rem; }
+.dot-marker {
+  position: absolute;
+  left: -1.25rem;
+  top: 0.9rem;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 2px solid var(--bg);
+}
+
+.race-card { display: block; text-decoration: none; color: inherit; }
+.race-card:hover { border-color: var(--ink-muted); }
+
+.race-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
+.race-name { font-weight: 600; }
+
+.race-card-time { margin: 0.25rem 0 0.5rem; display: flex; align-items: baseline; gap: 0.5rem; }
+
+@media (max-width: 480px) {
+  .timeline { padding-left: 1rem; }
+  .dot-marker { left: -1rem; }
+}

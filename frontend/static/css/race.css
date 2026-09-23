@@ -1,0 +1,24 @@
+/* Race detail page. Colours only via tokens.css. */
+
+.race-meta { color: var(--ink-muted); display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.race-total { font-size: 1.75rem; font-weight: 650; margin: 0.25rem 0 0.5rem; }
+.race-actions { margin-top: 0.75rem; }
+.total-row td { font-weight: 600; border-top: 2px solid var(--hairline); }
+
+#race-map .map { margin-top: 0.5rem; }
+#map-body p { margin-top: 0.5rem; }
+
+.tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.tabs button { border-color: var(--hairline); }
+.tabs button[aria-selected="true"] { border-color: var(--ink); font-weight: 600; }
+
+.summary-tile { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+  gap: 0.75rem 1rem; background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: var(--radius); padding: 0.75rem 1rem; }
+
+.notes-text { white-space: pre-wrap; }
+
+.recordings-list { list-style: none; margin: 0 0 1rem; padding: 0; display: grid; gap: 0.375rem; }
+.recordings-list li { display: flex; align-items: center; gap: 0.75rem; }
+.recordings-list .badge { margin-left: auto; }
+.recordings-list button { margin-left: auto; }
