@@ -3,9 +3,13 @@
 A personal triathlon racing-history web app. It ingests FIT files exported from
 Garmin/Apple watches (and Strava re-exports), groups multisport sessions into
 races, and gives you a timeline with per-segment pacing, gear tracking, and
-weather enrichment for each race. See `PLAN.md` for the full spec — data
-model, ingestion quirks, auth, and deployment — and `CLAUDE.md` for working
-conventions.
+weather enrichment for each race. The spec lives in [`docs/`](docs/README.md), and
+`CLAUDE.md` holds the working conventions.
+
+> **Being rewritten.** The app is being rebuilt as a single-owner instance with a
+> private and a public mode, a small Python backend and a plain HTML/CSS/JS frontend
+> (see [`docs/roadmap.md`](docs/roadmap.md)). The instructions below describe the
+> current v1 code (FastAPI + React) until the rewrite replaces it.
 
 **This repository is private and must stay that way.** `backend/tests/fixtures/`
 holds real, unanonymized race recordings (GPS tracks, device serials, personal
@@ -40,7 +44,7 @@ bind-mounted, so edits reload in place without a rebuild.
 | Frontend | http://localhost:5173 |
 | API | http://localhost:8000 (docs at `/docs`) |
 
-Registration is deliberately closed (§2), so create your account once with the
+Registration is deliberately closed, so create your account once with the
 CLI:
 
 ```bash
@@ -97,12 +101,13 @@ cd frontend && npm run typecheck && npm run lint
 
 Backend DB-backed tests need Postgres running (`docker compose up -d db`).
 FIT-parsing tests run against the five real fixtures in
-`backend/tests/fixtures/` and assert the ingestion traps in PLAN.md §3
+`backend/tests/fixtures/` and assert the ingestion traps in
+`docs/reference/fit-files.md`
 directly.
 
 ## Deployment
 
-Single VPS, `docker compose`, four services (PLAN.md §8):
+Single VPS, `docker compose`, four services:
 
 | Service | Image / build | Role |
 |---|---|---|
@@ -128,7 +133,7 @@ cp .env.example .env      # fill in DOMAIN, ACME_EMAIL, POSTGRES_*, JWT_SECRET, 
   `POSTGRES_*` values above.
 - `JWT_SECRET` — a real random secret, not the dev default.
 - `COOKIE_SECURE=true` and `COOKIE_DOMAIN` — cookies are `HttpOnly`, `Secure`,
-  `SameSite=Lax` in production (PLAN.md §4).
+  `SameSite=Lax` in production.
 - `CORS_ORIGINS` and `VITE_API_BASE_URL` — `https://$DOMAIN` (the frontend is
   served same-origin behind Caddy, so `VITE_API_BASE_URL=/api` also works).
 
@@ -140,10 +145,10 @@ git pull
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-No CI/CD in v1 (PLAN.md §8) — this is the whole deploy. `docker compose`
+No CI/CD in v1 — this is the whole deploy. `docker compose`
 rebuilds only what changed; the `frontend` container is expected to exit 0
 after syncing `dist/` — that's success, not a crash. Seed/manage accounts via
-the backend's CLI (no public registration, per §4).
+the backend's CLI (no public registration).
 
 Validate the compose file and Caddy config without touching a real
 environment:
