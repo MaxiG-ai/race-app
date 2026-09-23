@@ -1086,6 +1086,98 @@ def build_early_start_local_date() -> tuple[bytes, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Fixture 6: missing_t2.fit
+# ---------------------------------------------------------------------------
+
+# The gap between the bike's end and the run's start where the watch recorded no T2.
+MISSING_T2_GAP_S = 146
+
+
+def build_missing_t2() -> tuple[bytes, dict]:
+    # A watch multisport file with only four sessions: swim, T1, bike, run. The athlete
+    # went straight from the bike to the run without the watch switching to a
+    # transition, so the T2 is only a gap (seen on a real Apple Watch recording).
+    base_dt = utc(2026, 8, 23, 8, 0, 0)
+    builder = FitFileBuilder(auto_define=True)
+    emit_file_id(builder, Manufacturer.DEVELOPMENT.value, 0, 300300300, base_dt)
+    run_offset = 300 + 60 + 600 + MISSING_T2_GAP_S
+    segments = [
+        Segment(
+            name="swim",
+            sport=Sport.SWIMMING,
+            sub_sport=SubSport.OPEN_WATER,
+            start_offset=0,
+            elapsed=300.0,
+            distance=600.0,
+            waypoint_a=(48.1500, 7.7300),
+            waypoint_b=(48.1510, 7.7308),
+            hr_range=(120, 130),
+            altitude_range=None,
+            lap_trigger=LapTrigger.MANUAL,
+        ),
+        Segment(
+            name="t1",
+            sport=Sport.TRANSITION,
+            sub_sport=None,
+            start_offset=300,
+            elapsed=60.0,
+            distance=50.0,
+            waypoint_a=(48.1510, 7.7308),
+            waypoint_b=(48.1511, 7.7309),
+            hr_range=(100, 105),
+            altitude_range=(180.0, 1.0),
+            lap_trigger=LapTrigger.MANUAL,
+        ),
+        Segment(
+            name="bike",
+            sport=Sport.CYCLING,
+            sub_sport=None,
+            start_offset=360,
+            elapsed=600.0,
+            distance=4000.0,
+            ascent=40.0,
+            waypoint_a=(48.1511, 7.7309),
+            waypoint_b=(48.1700, 7.7500),
+            hr_range=(125, 150),
+            cadence_range=(80, 90),
+            altitude_range=(181.0, 40.0),
+            lap_trigger=LapTrigger.SESSION_END,
+        ),
+        Segment(
+            name="run",
+            sport=Sport.RUNNING,
+            sub_sport=None,
+            start_offset=run_offset,
+            elapsed=300.0,
+            distance=1500.0,
+            ascent=15.0,
+            waypoint_a=(48.1699, 7.7499),
+            waypoint_b=(48.1500, 7.7300),
+            hr_range=(130, 145),
+            cadence_range=(85, 90),
+            altitude_range=(219.0, 15.0),
+            lap_trigger=LapTrigger.SESSION_END,
+        ),
+    ]
+    stats = [emit_segment(builder, base_dt, seg) for seg in segments]
+    emit_activity(builder, stats[-1].end_time_recorded, sum(s.seg.timer for s in stats), len(stats))
+    meta = {"manufacturer": "development", "time_created": base_dt, "segments": stats}
+    return builder.build_bytes(), meta
+
+
+def self_check_missing_t2(path: Path, meta: dict) -> None:
+    check_common(path, meta)
+    sessions = [f for f in decode_messages(path) if f.name == "session"]
+    sports = [field_val(f, "sport") for f in sessions]
+    assert sports == ["swimming", "transition", "cycling", "running"], sports
+    bike, run = sessions[2], sessions[3]
+    bike_end = field_val(bike, "start_time") + timedelta(
+        seconds=field_val(bike, "total_elapsed_time")
+    )
+    assert (field_val(run, "start_time") - bike_end).total_seconds() == MISSING_T2_GAP_S
+
+
+# ---------------------------------------------------------------------------
 # Self-check: re-read every generated file with fitdecode and verify it agrees
 # with the values used to build it.
 # ---------------------------------------------------------------------------
@@ -1594,6 +1686,25 @@ def write_readme(all_meta: dict) -> None:
     lines.extend(session_table_rows(meta))
     lines.append("")
 
+    # missing_t2.fit
+    meta = all_meta["missing_t2.fit"]
+    lines.append("## `missing_t2.fit`")
+    lines.append("")
+    lines.append(
+        "Reproduces: a multisport file with no recorded T2 (four sessions: swim, T1, bike, "
+        f"run). The run starts {MISSING_T2_GAP_S} s after the bike's end; the importer "
+        "derives T2 from that gap."
+    )
+    lines.append("")
+    lines.append(
+        "| Session | sport/sub_sport | start_time (UTC) | elapsed (s) | timer (s) | "
+        "distance (m) | ascent (m) | avg/max HR | avg_power (W) | NP (W) | lap distances (m) | "
+        "laps | records |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.extend(session_table_rows(meta))
+    lines.append("")
+
     lines.append("## Regenerating")
     lines.append("")
     lines.append("```")
@@ -1602,7 +1713,7 @@ def write_readme(all_meta: dict) -> None:
     lines.append("```")
     lines.append("")
     lines.append(
-        "The script writes the five `.fit` files above and this README from the same "
+        "The script writes the six `.fit` files above and this README from the same "
         "constants, then re-reads every file with `fitdecode` and asserts it against "
         "those constants. Only changing a fixture needs `fit-tool`/`fitdecode` "
         "(dev-only dependencies, never installed in the runtime image); the committed "
@@ -1625,6 +1736,7 @@ def main() -> None:
         "overlap_boundary.fit": build_overlap_boundary,
         "edge_single_bike.fit": build_edge_single_bike,
         "early_start_local_date.fit": build_early_start_local_date,
+        "missing_t2.fit": build_missing_t2,
     }
     checkers = {
         "apple_multisport.fit": self_check_apple,
@@ -1632,6 +1744,7 @@ def main() -> None:
         "overlap_boundary.fit": self_check_overlap,
         "edge_single_bike.fit": self_check_edge,
         "early_start_local_date.fit": self_check_early_start,
+        "missing_t2.fit": self_check_missing_t2,
     }
 
     all_meta = {}

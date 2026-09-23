@@ -97,6 +97,17 @@ Reproduces: UTC date ≠ local date at the race start (Trap 11 — the GPS-based
 | t2 | transition/— | 2026-06-20T22:46:00Z | 60 | 60 | 40 | — | 107/109 | — | — | 40 | 1 | 6 |
 | run | running/— | 2026-06-20T22:47:00Z | 300 | 300 | 1500 | 15 | 137/144 | — | — | 1500 | 1 | 30 |
 
+## `missing_t2.fit`
+
+Reproduces: a multisport file with no recorded T2 (four sessions: swim, T1, bike, run). The run starts 146 s after the bike's end; the importer derives T2 from that gap.
+
+| Session | sport/sub_sport | start_time (UTC) | elapsed (s) | timer (s) | distance (m) | ascent (m) | avg/max HR | avg_power (W) | NP (W) | lap distances (m) | laps | records |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| swim | swimming/open_water | 2026-08-23T08:00:00Z | 300 | 300 | 600 | — | 125/130 | — | — | 600 | 1 | 30 |
+| t1 | transition/— | 2026-08-23T08:05:00Z | 60 | 60 | 50 | — | 102/104 | — | — | 50 | 1 | 6 |
+| bike | cycling/— | 2026-08-23T08:06:00Z | 600 | 600 | 4000 | 40 | 137/150 | — | — | 4000 | 1 | 60 |
+| run | running/— | 2026-08-23T08:18:26Z | 300 | 300 | 1500 | 15 | 137/144 | — | — | 1500 | 1 | 30 |
+
 ## Regenerating
 
 ```
@@ -104,4 +115,4 @@ cd backend
 uv run python tests/fixtures/make_fixtures.py
 ```
 
-The script writes the five `.fit` files above and this README from the same constants, then re-reads every file with `fitdecode` and asserts it against those constants. Only changing a fixture needs `fit-tool`/`fitdecode` (dev-only dependencies, never installed in the runtime image); the committed `.fit` files and this README are enough to run the test suite.
+The script writes the six `.fit` files above and this README from the same constants, then re-reads every file with `fitdecode` and asserts it against those constants. Only changing a fixture needs `fit-tool`/`fitdecode` (dev-only dependencies, never installed in the runtime image); the committed `.fit` files and this README are enough to run the test suite.

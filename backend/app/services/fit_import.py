@@ -21,14 +21,15 @@ from app.services.tz import timezone_at
 SEMICIRCLE_TO_DEG = 180 / 2**31
 PROGRESS_POINTS = 200
 
-# A multisport race is exactly these five sessions, in this order.
-_MULTISPORT: tuple[tuple[Segment, str], ...] = (
-    (Segment.SWIM, "swimming"),
-    (Segment.T1, "transition"),
-    (Segment.BIKE, "cycling"),
-    (Segment.T2, "transition"),
-    (Segment.RUN, "running"),
+# A multisport race is swim, bike, run in this order. The transition between two legs
+# is optional: a watch that skips one records no session for it, and the import derives
+# it from the gap, as grouping does.
+_LEGS: tuple[tuple[str, Segment], ...] = (
+    ("swimming", Segment.SWIM),
+    ("cycling", Segment.BIKE),
+    ("running", Segment.RUN),
 )
+_TRANSITION_AFTER = {Segment.SWIM: Segment.T1, Segment.BIKE: Segment.T2}
 _FIT_SPORT: dict[str, Sport] = {
     "swimming": Sport.SWIM,
     "cycling": Sport.BIKE,
@@ -197,11 +198,23 @@ def _check_shape(sessions: list[dict[str, Any]]) -> tuple[UploadKind, list[Segme
     found = [s.get("sport") for s in sessions]
     if len(sessions) == 1:
         return UploadKind.SINGLE_SPORT, [None]
-    if found == [sport for _, sport in _MULTISPORT]:
-        return UploadKind.MULTISPORT, [segment for segment, _ in _MULTISPORT]
+    segments: list[Segment | None] = []
+    legs = iter(_LEGS)
+    for sport in found:
+        previous = segments[-1] if segments else None
+        if sport == "transition" and previous in _TRANSITION_AFTER:
+            segments.append(_TRANSITION_AFTER[previous])  # type: ignore[index]
+            continue
+        leg = next(legs, None)
+        if leg is None or sport != leg[0]:
+            segments = []
+            break
+        segments.append(leg[1])
+    if segments and segments[-1] is Segment.RUN:
+        return UploadKind.MULTISPORT, segments
     raise FitParseError(
-        f"Expected one session, or five in the order swim, transition, bike, transition, "
-        f"run; found {len(sessions)}: {', '.join(str(s) for s in found)}."
+        "Expected one session, or a multisport race in the order swim, bike, run (with or "
+        f"without transitions); found {len(sessions)}: {', '.join(str(s) for s in found)}."
     )
 
 

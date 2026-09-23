@@ -183,7 +183,7 @@ def group(db: Session, upload_ids: list[int], given: dict[int, Segment]) -> Race
         race = create_race(db, first)
         for u in sorted(tray, key=lambda u: parsed[u.id].start_time):
             add_recordings(db, race, u, parsed[u.id], segments[u.id])
-        synthesize_transitions(db, race)
+    synthesize_transitions(db, race)
     enrich(db, race)
     return race
 
@@ -300,6 +300,11 @@ def receive(db: Session, filename: str | None, data: bytes) -> Outcome:
 
     race = create_race(db, parsed)
     add_recordings(db, race, upload, parsed)
+    try:
+        synthesize_transitions(db, race)  # a watch can skip recording a transition
+    except GroupingError as exc:
+        # The file's own legs are implausibly far apart; keep the race without the guess.
+        log.warning("No derived transition for race %s: %s", race.id, exc)
     enrich(db, race)
     db.commit()
     return Outcome(filename, "created_race", f"Created race {race.id}.", upload.id, race.id)

@@ -199,3 +199,27 @@ def test_identical_copy_of_a_failed_upload_is_retried_not_called_duplicate(owner
     assert second["message"] == first["message"] and "Could not read" in second["message"]
     assert second["upload_id"] == first["upload_id"]
     assert db.scalar(select(func.count()).select_from(Upload)) == 1
+
+
+def test_multisport_without_a_recorded_t2_derives_it(owner):
+    """Issue #5: a watch that went straight from bike to run recorded four sessions."""
+    out = upload(owner, "missing_t2.fit")[0]
+    assert out["result"] == "created_race", out["message"]
+    segments = {
+        s["segment"]: s for s in owner.get(f"/api/races/{out['race_id']}").json()["segments"]
+    }
+    assert list(segments) == ["swim", "t1", "bike", "t2", "run"]
+    assert not segments["t1"]["is_derived"]
+    assert segments["t2"]["is_derived"] and segments["t2"]["elapsed_time"] == 146
+    assert segments["t2"]["distance_m"] is None
+
+
+def test_multisport_out_of_order_is_still_rejected():
+    from app.services.fit_import import _check_shape
+
+    with pytest.raises(FitParseError):
+        _check_shape([{"sport": s} for s in ("cycling", "swimming", "running")])
+    with pytest.raises(FitParseError):
+        _check_shape(
+            [{"sport": s} for s in ("swimming", "transition", "transition", "cycling", "running")]
+        )
