@@ -1,143 +1,111 @@
-"""Shared test fixtures. Keep DB-related fixtures out of this file — a later agent
-owns those; this only helps tests reach the FIT fixture files."""
+"""Tests run against a real PostgreSQL database, `race_test`, migrated with Alembic.
 
-from collections.abc import Iterator
+The app commits inside requests, so isolation is by truncation between tests rather
+than by rolled-back transactions.
+"""
+
+import os
+import tempfile
 from pathlib import Path
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+_BASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://race:race@localhost:5432/race")
+TEST_DB_URL = _BASE_URL.rsplit("/", 1)[0] + "/race_test"
+os.environ["DATABASE_URL"] = TEST_DB_URL
+os.environ["UPLOAD_DIR"] = tempfile.mkdtemp(prefix="race-uploads-")
+os.environ["SITE_MODE"] = "private"
 
-import app.models  # noqa: F401  (registers every mapped class on Base.metadata)
-from app.config import settings
-from app.db import Base, get_db
-from app.main import app
-from app.models import RaceCategory
-from app.services.categories import CATEGORY_SEEDS
+import pytest  # noqa: E402
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+from app import access  # noqa: E402
+from app.config import get_settings  # noqa: E402
+from app.db import _session_factory  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models import Owner  # noqa: E402
+from app.services import weather  # noqa: E402
 
-
-def fixture_path(name: str) -> Path:
-    """Absolute path to one of the real FIT fixtures in tests/fixtures/."""
-    path = FIXTURES_DIR / name
-    assert path.exists(), f"missing fixture: {path}"
-    return path
-
-
-# --- DB-backed test fixtures --------------------------------------------------
-#
-# Tests run against a real Postgres, never the dev database: `_TEST_DB_NAME` is a
-# separate database on the same server as `settings.database_url`, created fresh
-# for the test session and dropped afterwards. Each test then gets its own
-# connection wrapped in an outer transaction + SAVEPOINT (`join_transaction_mode=
-# "create_savepoint"`), rolled back at teardown — so tests can freely call
-# `db.commit()` (as the app's request-scoped sessions do) without leaking state
-# between tests or ever touching another test's rows.
-
-_TEST_DB_NAME = "race_test"
+FIXTURES = Path(__file__).parent / "fixtures"
+PRIVATE = FIXTURES / "private"
+PASSWORD = "correct horse battery"
+# Seeded by the migration; everything else is truncated between tests.
+_KEEP = {"race_category", "alembic_version", "site_settings"}
 
 
-def _server_url(db_name: str) -> str:
-    """`settings.database_url` with its trailing database name swapped out."""
-    root, _, _ = settings.database_url.rpartition("/")
-    return f"{root}/{db_name}"
+def fixture_bytes(name: str) -> bytes:
+    return (FIXTURES / name).read_bytes()
 
 
-@pytest.fixture(scope="session")
-def _test_database() -> Iterator[str]:
-    """Creates `_TEST_DB_NAME` fresh (dropping any leftover copy) and the full
-    schema in it via `Base.metadata.create_all` — no Alembic dependency, so tests
-    aren't coupled to migration history being up to date. Drops it again at the
-    end of the session."""
-    admin_engine = create_engine(_server_url("postgres"), isolation_level="AUTOCOMMIT")
-    with admin_engine.connect() as conn:
-        conn.execute(text(f'DROP DATABASE IF EXISTS "{_TEST_DB_NAME}" WITH (FORCE)'))
-        conn.execute(text(f'CREATE DATABASE "{_TEST_DB_NAME}"'))
-    admin_engine.dispose()
-
-    test_db_url = _server_url(_TEST_DB_NAME)
-    schema_engine = create_engine(test_db_url)
-    Base.metadata.create_all(schema_engine)
-    schema_engine.dispose()
-
-    yield test_db_url
-
-    admin_engine = create_engine(_server_url("postgres"), isolation_level="AUTOCOMMIT")
-    with admin_engine.connect() as conn:
-        conn.execute(text(f'DROP DATABASE IF EXISTS "{_TEST_DB_NAME}" WITH (FORCE)'))
-    admin_engine.dispose()
+@pytest.fixture(scope="session", autouse=True)
+def _database():
+    admin = create_engine(_BASE_URL.rsplit("/", 1)[0] + "/postgres", isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text("DROP DATABASE IF EXISTS race_test WITH (FORCE)"))
+        conn.execute(text("CREATE DATABASE race_test"))
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    command.upgrade(config, "head")
+    yield
+    admin.dispose()
 
 
-@pytest.fixture(scope="session")
-def _engine(_test_database: str):
-    engine = create_engine(_test_database, future=True)
-    yield engine
-    engine.dispose()
-
-
-@pytest.fixture
-def db(_engine) -> Iterator[Session]:
-    """A session bound to a connection with an open outer transaction. Any
-    `db.commit()` inside the test (or inside app code sharing this session via the
-    `client` fixture) only closes a nested SAVEPOINT — the outer transaction stays
-    open until the fixture rolls it back after the test."""
-    connection = _engine.connect()
-    outer_txn = connection.begin()
-    session_factory = sessionmaker(
-        bind=connection,
-        autoflush=False,
-        expire_on_commit=False,
-        join_transaction_mode="create_savepoint",
-    )
-    session = session_factory()
-
-    yield session
-
-    session.close()
-    outer_txn.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def client(db: Session) -> Iterator[TestClient]:
-    """A `TestClient` whose requests share `db` — the fixture's transactional
-    rollback, not deletion, is what isolates tests from each other."""
-
-    def _get_db_override() -> Iterator[Session]:
-        yield db
-
-    app.dependency_overrides[get_db] = _get_db_override
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.pop(get_db, None)
-
-
-@pytest.fixture
-def categories(db: Session) -> list[RaceCategory]:
-    """Seed the DTU distance categories.
-
-    The schema here is built with `create_all`, which skips the migration that seeds
-    them — so any test touching classification has to ask for this explicitly.
-    """
-    rows = [
-        RaceCategory(
-            key=seed.key,
-            label=seed.label,
-            kind=seed.kind,
-            sort_order=seed.sort_order,
-            swim_min_m=seed.swim[0],
-            swim_max_m=seed.swim[1],
-            bike_min_m=seed.bike[0],
-            bike_max_m=seed.bike[1],
-            run_min_m=seed.run[0],
-            run_max_m=seed.run[1],
-            tolerance_pct=10.0,
-            is_active=True,
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    with _session_factory()() as db:
+        tables = db.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        ).scalars()
+        names = ", ".join(f'"{t}"' for t in tables if t not in _KEEP)
+        db.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        db.execute(
+            text(
+                "UPDATE site_settings SET site_title='Race history', athlete_name=NULL, about=NULL"
+            )
         )
-        for seed in CATEGORY_SEEDS
+        db.commit()
+    access._login_attempts.clear()
+    monkeypatch.setattr(get_settings(), "site_mode", "private")
+
+    def no_network(url):
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(weather, "fetch_json", no_network)
+
+
+@pytest.fixture
+def db():
+    with _session_factory()() as session:
+        yield session
+
+
+@pytest.fixture
+def public_mode(monkeypatch):
+    monkeypatch.setattr(get_settings(), "site_mode", "public")
+
+
+@pytest.fixture
+def anon():
+    return TestClient(app, base_url="http://localhost")
+
+
+@pytest.fixture
+def owner():
+    """A logged-in owner. Sends X-Requested-With like the frontend's api.js."""
+    with _session_factory()() as db:
+        db.add(Owner(username="owner", password_hash=access.hash_password(PASSWORD)))
+        db.commit()
+    client = TestClient(app, base_url="http://localhost", headers={"X-Requested-With": "fetch"})
+    response = client.post("/api/auth/login", json={"username": "owner", "password": PASSWORD})
+    assert response.status_code == 204
+    return client
+
+
+def upload(client, *names: str):
+    files = [
+        ("files", (n, fixture_bytes(n) if not n.startswith("/") else Path(n).read_bytes()))
+        for n in names
     ]
-    db.add_all(rows)
-    db.commit()
-    return rows
+    response = client.post("/api/uploads", files=files)
+    assert response.status_code == 200, response.text
+    return response.json()
