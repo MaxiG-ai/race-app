@@ -21,10 +21,10 @@ The app is being rebuilt nearly from scratch (see `docs/roadmap.md`):
 - Ruff, line length 100. JS modules start with `// @ts-check`. Design tokens are CSS
   custom properties in `tokens.css`; never raw hex. Numeric columns get `.tnum`.
 
-The current `backend/` and `frontend/` (React/Vite) trees are **v1** and are being
-replaced. The backend stack stays the same, but the code is rewritten for the
-single-owner model. Don't extend them. Their `§N` comments refer to the old, deleted
-`PLAN.md`.
+The rewrite has replaced v1 (FastAPI + React, multi-tenant) in the working tree; v1 is
+only in git history. Where to find things: access rules in `backend/app/access.py`
+(router factories + `visible_race(s)`), the FIT parser in `services/fit_import.py`, what
+a parse becomes in the database (tray, race, grouping, primaries) in `services/imports.py`.
 
 ## Non-negotiables
 

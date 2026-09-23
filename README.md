@@ -1,186 +1,84 @@
 # race-app
 
-A personal triathlon racing-history web app. It ingests FIT files exported from
-Garmin/Apple watches (and Strava re-exports), groups multisport sessions into
-races, and gives you a timeline with per-segment pacing, gear tracking, and
-weather enrichment for each race. The spec lives in [`docs/`](docs/README.md), and
-`CLAUDE.md` holds the working conventions.
+Your own triathlon race history, on your own machine or your own domain. Drop in the FIT
+files from your watch and each race becomes a timeline entry that opens into official vs
+recorded splits, the course map, pacing per lap, weather, fueling and gear. Two races of
+the same category can be compared with a gap-to-reference chart.
 
-> **Being rewritten.** The app is being rebuilt as a single-owner instance with a
-> private and a public mode, a small Python backend and a plain HTML/CSS/JS frontend
-> (see [`docs/roadmap.md`](docs/roadmap.md)). The instructions below describe the
-> current v1 code (FastAPI + React) until the rewrite replaces it.
+One instance holds one athlete's races. It runs in one of two modes:
 
-**This repository is private and must stay that way.** `backend/tests/fixtures/`
-holds real, unanonymized race recordings (GPS tracks, device serials, personal
-profile data) — see that directory's own README before ever making this repo
-public.
+- **private**: every page needs your login. For looking at your own races.
+- **public**: anyone can browse the races you publish; editing still needs your login.
+  New races are always private until you publish them.
 
-## Stack
+The spec lives in [`docs/`](docs/README.md); [`CLAUDE.md`](CLAUDE.md) holds the working
+conventions.
 
-```
-backend/    uv project — FastAPI + SQLAlchemy 2.0 + Alembic + Pydantic v2
-frontend/   Vite + React 19 + TS + Tailwind v4 + TanStack Query
-```
+## Run your own instance
 
-The only coupling between them is the OpenAPI schema: the frontend's
-`src/types/api.d.ts` is generated from the backend's `/openapi.json`, never
-hand-written.
-
-## Local development
-
-Requires only Docker.
+You need Docker with Compose.
 
 ```bash
-docker compose up
+git clone <this repository> race-app && cd race-app
+cp .env.example .env            # set POSTGRES_PASSWORD; SITE_MODE=private or public
+docker compose up -d --build
+docker compose exec app python -m app.cli create-owner --username you
+# → http://localhost:8000, then Import to upload your first FIT files
 ```
 
-That brings up Postgres, the API and the Vite dev server together. Migrations
-run automatically before the API serves, and both source trees are
-bind-mounted, so edits reload in place without a rebuild.
+The app runs its database migrations on start. Forgot the password?
+`docker compose exec app python -m app.cli set-password` (the CLI is the reset flow; there
+are no reset emails).
 
-| | |
-|---|---|
-| Frontend | http://localhost:5173 |
-| API | http://localhost:8000 (docs at `/docs`) |
-
-Registration is deliberately closed, so create your account once with the
-CLI:
+**On your own domain**, set `SITE_MODE=public`, `DOMAIN` and `ACME_EMAIL` in `.env`, point
+the domain's DNS at the server, and add the Caddy override, which fetches a TLS
+certificate automatically:
 
 ```bash
-docker compose exec backend python -m app.cli create-user --email you@example.com
+docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
 ```
 
-Rebuild the images only when dependencies change:
+**Backups:** `scripts/backup.sh` dumps the database and mirrors the original FIT files
+into `$BACKUP_DIR`; run it nightly from cron. See
+[deployment](docs/operations/deployment.md) for restore steps and every setting.
+
+**Parser improved?** Every original upload is kept, so
+`docker compose exec app python -m app.cli reimport` re-reads all of them with the new
+parser. Your edits, primary-recording choices and gear assignments are kept.
+
+## Develop
+
+```
+backend/    Python 3.12, FastAPI + Pydantic v2 + SQLAlchemy 2.0 + Alembic, run with uv
+frontend/   plain HTML + CSS + ES-module JS, no build step; Leaflet and Chart.js vendored
+```
+
+With a local PostgreSQL (the tests create and drop their own `race_test` database):
 
 ```bash
-docker compose up --build
+cd backend
+uv sync
+uv run pytest                    # DATABASE_URL defaults to race:race@localhost:5432/race
+uv run ruff check . && uv run ruff format --check .
+uv run alembic upgrade head
+uv run python -m app.cli create-owner
+uv run uvicorn app.main:app --reload     # serves ../frontend too
 ```
 
-<details>
-<summary>Running natively instead (requires <code>uv</code> and Node 22+)</summary>
+Or everything in Docker with the source bind-mounted and auto-reload:
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml up`.
 
-The host defaults in `app/config.py` and `vite.config.ts` point at
-`localhost`, so the native workflow still works against the containerised
-database alone:
+The frontend is exactly what is in `frontend/`: edit a file, reload the page. There is
+nothing to build.
 
-```bash
-docker compose up -d db
+### Test fixtures
 
-cd backend && uv sync && uv run alembic upgrade head
-uv run uvicorn app.main:app --reload
+`backend/tests/fixtures/` holds **synthetic** FIT files that reproduce the vendor quirks
+documented in [fit-files](docs/reference/fit-files.md); `make_fixtures.py` regenerates
+them. Real recordings never go in the repository: put your own in
+`backend/tests/fixtures/private/` (gitignored), and the real-file test runs when they are
+present.
 
-cd frontend && npm install && npm run dev
-```
-</details>
+## License
 
-Regenerate frontend API types whenever the backend's request/response shapes
-change:
-
-```bash
-cd frontend && npm run gen:api
-```
-
-### Tests & linting
-
-With the stack up, both toolchains are available inside the containers — the
-backend dev image installs dev dependencies:
-
-```bash
-docker compose exec backend pytest
-docker compose exec backend ruff check .
-docker compose exec frontend npm run lint
-```
-
-Or natively:
-
-```bash
-cd backend  && uv run pytest && uv run ruff check . && uv run ruff format .
-cd frontend && npm run typecheck && npm run lint
-```
-
-Backend DB-backed tests need Postgres running (`docker compose up -d db`).
-FIT-parsing tests run against the five real fixtures in
-`backend/tests/fixtures/` and assert the ingestion traps in
-`docs/reference/fit-files.md`
-directly.
-
-## Deployment
-
-Single VPS, `docker compose`, four services:
-
-| Service | Image / build | Role |
-|---|---|---|
-| `caddy` | `caddy:2-alpine` | Reverse proxy + automatic Let's Encrypt TLS. Serves the built SPA from a shared volume and proxies `/api/*` to `backend`. |
-| `backend` | `backend/Dockerfile` | gunicorn + uvicorn workers. Entrypoint runs `alembic upgrade head` before serving. No published host port — only reachable from `caddy` on the compose network. |
-| `db` | `postgres:17-alpine` | Named volume, healthcheck. Never publishes a host port. |
-| `frontend` | `frontend/Dockerfile` | Build-only: `npm ci && npm run build`, then syncs `dist/` onto the volume `caddy` serves, and exits. No Node process in production. |
-
-### One-time server setup
-
-```bash
-git clone <this-repo> /opt/race-app && cd /opt/race-app
-cp .env.example .env      # fill in DOMAIN, ACME_EMAIL, POSTGRES_*, JWT_SECRET, ...
-```
-
-`.env` must at minimum set, for production:
-
-- `DOMAIN` / `ACME_EMAIL` — Caddy's site address and Let's Encrypt contact.
-- `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` — the `db` service's
-  own credentials.
-- `DATABASE_URL` — pointed at the **`db` service hostname**, not `localhost`
-  (e.g. `postgresql+psycopg://race:<password>@db:5432/race`), matching the
-  `POSTGRES_*` values above.
-- `JWT_SECRET` — a real random secret, not the dev default.
-- `COOKIE_SECURE=true` and `COOKIE_DOMAIN` — cookies are `HttpOnly`, `Secure`,
-  `SameSite=Lax` in production.
-- `CORS_ORIGINS` and `VITE_API_BASE_URL` — `https://$DOMAIN` (the frontend is
-  served same-origin behind Caddy, so `VITE_API_BASE_URL=/api` also works).
-
-### Deploy
-
-```bash
-cd /opt/race-app
-git pull
-docker compose -f docker-compose.prod.yml up -d --build
-```
-
-No CI/CD in v1 — this is the whole deploy. `docker compose`
-rebuilds only what changed; the `frontend` container is expected to exit 0
-after syncing `dist/` — that's success, not a crash. Seed/manage accounts via
-the backend's CLI (no public registration).
-
-Validate the compose file and Caddy config without touching a real
-environment:
-
-```bash
-docker compose -f docker-compose.prod.yml config
-docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile" \
-  -e DOMAIN=example.com -e ACME_EMAIL=a@b.c \
-  caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-```
-
-### Backups
-
-`scripts/backup.sh` takes a `pg_dump` (custom format) of the database and
-mirrors the retained original FIT uploads volume into `$BACKUP_DIR` on the
-host (default `/opt/race-app/backups`), rotating dumps older than
-`$RETENTION_DAYS` (default 14 days). It's a plain host directory on purpose —
-whatever offsite backup the VPS already runs can pick it up without knowing
-anything about Docker.
-
-Wire it to cron for a nightly run:
-
-```cron
-15 3 * * * cd /opt/race-app && ./scripts/backup.sh >> /var/log/race-app-backup.log 2>&1
-```
-
-Restore the database from a dump:
-
-```bash
-docker compose -f docker-compose.prod.yml exec -T db \
-  pg_restore -U race -d race --clean --if-exists < /opt/race-app/backups/db/race-<timestamp>.dump
-```
-
-Restore FIT originals by copying `$BACKUP_DIR/uploads/` back onto the
-`uploads` named volume (e.g. via a throwaway container bind-mounting both).
+MIT, see [LICENSE](LICENSE).

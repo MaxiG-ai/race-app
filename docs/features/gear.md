@@ -71,6 +71,11 @@ All owner only.
 3. Unknown serial → list it under unknown devices. Once it's named, every past and future
    recording carrying that serial is backfilled.
 4. A manual assignment is **never** overwritten by detection.
+4a. Detection only attaches gear to the segments its kind belongs to (bike → bike,
+   shoes → run, wetsuit → swim, other → any). A watch keeps listing the power pedals
+   during the run; that mustn't put run kilometres on the bike.
+4b. The recording device itself (`device_info` index `creator`) is `device_key`, not a
+   sensor, so it never shows up as an unknown device.
 5. **Shoes can't be detected**: no sensor, and Apple files list no paired devices. So the
    run's gear is manual, with the last-used pair as the default.
 

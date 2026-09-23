@@ -1,10 +1,5 @@
-# Reverse proxy + static host for race-app (PLAN.md §8).
-#
-# Site address and ACME contact come from the environment so this file works
-# unchanged for any host: `docker-compose.prod.yml` passes DOMAIN and
-# ACME_EMAIL through from `.env`. Automatic TLS (Let's Encrypt) is Caddy's
-# default behaviour for any non-localhost, non-IP site address — nothing
-# else to configure.
+# Public deployments only. Caddy terminates TLS (Let's Encrypt) and proxies everything to
+# the app, which serves the pages, /static and /api itself. Caddy serves no files.
 {
 	email {$ACME_EMAIL}
 }
@@ -12,11 +7,10 @@
 {$DOMAIN} {
 	encode zstd gzip
 
-	# FIT files are single-digit MB, but Caddy's default request body cap is
-	# lower — raise it explicitly (§8) rather than have uploads fail at the
-	# proxy before the backend even gets a chance to reject them properly.
+	# Matches the app's own 20 MB upload limit (MAX_UPLOAD_BYTES), with room for
+	# several files in one request.
 	request_body {
-		max_size 32MB
+		max_size 100MB
 	}
 
 	header {
@@ -27,32 +21,5 @@
 		-Server
 	}
 
-	# The backend's routers are already mounted under /api (PLAN.md §4: "All
-	# under /api"), so the path FastAPI expects to see IS /api/races, not
-	# /races. We deliberately use `handle` (which preserves the full request
-	# path) rather than `handle_path` (which would strip the /api prefix
-	# before proxying) — stripping here would make every backend route 404.
-	handle /api/* {
-		reverse_proxy backend:8000
-	}
-
-	# Hashed build assets (Vite emits content-hashed filenames under
-	# /assets/*) are safe to cache forever — a new deploy ships new filenames,
-	# never a mutated old one.
-	handle /assets/* {
-		root * /srv/frontend
-		header Cache-Control "public, max-age=31536000, immutable"
-		file_server
-	}
-
-	# Everything else is the SPA shell: serve the matching static file if one
-	# exists (favicon, icons.svg, ...), otherwise fall back to index.html so
-	# client-side routing (react-router) handles the path. index.html itself
-	# must never be cached, or a deploy can't be picked up until it expires.
-	handle {
-		root * /srv/frontend
-		header Cache-Control "no-store"
-		try_files {path} /index.html
-		file_server
-	}
+	reverse_proxy app:8000
 }

@@ -4,10 +4,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
-.coverage
-htmlcov/
 backend/var/
-node_modules/
-dist/
+# Real recordings stay on your machine; tests skip them when absent.
+backend/tests/fixtures/private/
 *.local
 .DS_Store

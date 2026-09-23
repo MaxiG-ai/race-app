@@ -20,12 +20,12 @@ docker compose exec app python -m app.cli create-owner
 ```
 
 The app container runs migrations before it starts serving, so a checkout can't drift
-from its schema. For development, the source is bind-mounted with auto-reload.
+from its schema. For development, `docker-compose.dev.yml` bind-mounts the source with auto-reload.
 
 ## Public
 
 ```bash
-cp .env.example .env    # DOMAIN, ACME_EMAIL, SITE_MODE=public, POSTGRES_*, SECRET
+cp .env.example .env    # DOMAIN, ACME_EMAIL, SITE_MODE=public, POSTGRES_*
 docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
 docker compose exec app python -m app.cli create-owner
 ```
@@ -49,9 +49,11 @@ Twelve-factor: everything comes from env vars, and `.env.example` documents each
 | Var | Purpose |
 |---|---|
 | `SITE_MODE` | `private` \| `public`, see [access](../features/access-and-visibility.md) |
-| `DATABASE_URL` | points at the `db` service host |
-| `SECRET` | random secret; used to sign anything that needs signing |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | the `db` service's credentials; compose builds `DATABASE_URL` from them |
+| `DATABASE_URL` | only when running the app outside compose |
+| `APP_PORT` | host port binding for local/self-hosted runs, default `127.0.0.1:8000` |
 | `UPLOAD_DIR` | where original FIT files are kept (a mounted volume) |
+| `MAX_UPLOAD_BYTES` | per-file upload limit, default 20 MB |
 | `OPEN_METEO_BASE_URL` | weather API base |
 | `DOMAIN`, `ACME_EMAIL` | public mode only |
 
