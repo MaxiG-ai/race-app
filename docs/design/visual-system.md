@@ -58,13 +58,30 @@ it isn't a generic step marker.
 
 ## Charts
 
-All charts are hand-written SVG, built by one small helper module (`static/js/svg.js`:
-scales, axes, paths, labels). Rules for every chart:
+Charts use **Chart.js**, vendored and pinned ([architecture](../architecture.md#dependency-policy)).
+It renders to `<canvas>` and is ~200 KB minified (~70 KB gzipped), with no dependencies. Every chart is created through one module, `static/js/charts.js`,
+which sets the shared defaults once: fonts, the token colours read from CSS custom
+properties, grid colour, tooltip style, `animation: false`. Page code never configures
+Chart.js from scratch.
 
-- Label lines directly instead of using a legend box.
-- Every chart has a table fallback in a `<details>` element.
-- Draw series only where data exists; a gap in the data is a gap in the line.
-- Charts use `viewBox`, so they scale to the container. They must still be readable at phone width.
+It was chosen over the alternatives for these reasons:
+
+| Library | Why not (for this app) |
+|---|---|
+| uPlot | much smaller (~50 KB) and faster, but tooltips, the diverging fill and direct labels all need custom code; its speed doesn't matter at ~20–200 points per chart. The runner-up. |
+| Apache ECharts | very capable, but roughly 1 MB minified, which is too heavy for the "few, small dependencies" rule |
+| Frappe Charts | small and SVG-based, but its axis and fill options are too limited for the gap chart |
+| Observable Plot / D3 | a toolkit rather than charts: close to writing them by hand |
+
+Rules for every chart:
+
+- Label lines directly instead of using a legend box (Chart.js legend off).
+- Every chart has a table fallback in a `<details>` element. A canvas is opaque to
+  screen readers, so the table is required, not optional.
+- Draw series only where data exists; a gap in the data is a gap in the line (`null` values, `spanGaps: false`).
+- Charts are `responsive` inside a container with a fixed aspect ratio. They must still be
+  readable at phone width.
+- Colours come from the tokens (`getComputedStyle` on `--swim` etc.), never from hex in JS.
 
 ## Layout
 

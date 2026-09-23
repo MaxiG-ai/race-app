@@ -9,16 +9,21 @@ hard-won detail about real FIT files that can't be worked out from the code.
 
 The app is being rebuilt nearly from scratch (see `docs/roadmap.md`):
 
-- **Backend:** Python 3.12+, run with `uv` (`uv add`, `uv run pytest`). Never pip, never a bare
-  venv. Small dependency set; every package justified in `docs/architecture.md`.
-- **Frontend:** plain HTML + CSS + ES-module JS, no build step, no framework. Leaflet
-  (vendored) is the only frontend library. Charts are hand-written SVG.
+- **Backend:** Python 3.12+, FastAPI + Pydantic v2 + SQLAlchemy 2.0 (`Mapped[...]`,
+  `mapped_column`) + Alembic, run with `uv` (`uv add`, `uv run pytest`). Never pip, never
+  a bare venv. Every package is justified in `docs/architecture.md`.
+- **Frontend:** plain HTML + CSS + ES-module JS, no build step, no framework. The only
+  libraries are Leaflet (maps) and Chart.js (charts), both vendored and pinned. Every chart
+  goes through `static/js/charts.js`.
+- **Link previews:** public pages are served through backend shells that fill in
+  `<title>`/Open Graph tags; a hidden race gets the generic shell.
 - **Database:** PostgreSQL, always, including local runs.
 - Ruff, line length 100. JS modules start with `// @ts-check`. Design tokens are CSS
   custom properties in `tokens.css`; never raw hex. Numeric columns get `.tnum`.
 
-The `backend/` (FastAPI/SQLAlchemy) and `frontend/` (React/Vite) trees are **v1** and
-are being replaced. Don't extend them. Their `§N` comments refer to the old, deleted
+The current `backend/` and `frontend/` (React/Vite) trees are **v1** and are being
+replaced. The backend stack stays the same, but the code is rewritten for the
+single-owner model. Don't extend them. Their `§N` comments refer to the old, deleted
 `PLAN.md`.
 
 ## Non-negotiables

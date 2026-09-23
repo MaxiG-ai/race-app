@@ -33,14 +33,15 @@ hundred points per segment (`services/geo.py`).
 
 ## UI
 
-`race.html?id=`, top to bottom:
+`/races/{id}` (served through the page shell, so a shared link gets a preview; see
+[architecture](../architecture.md#link-previews)), top to bottom:
 
 1. **Header**: name, date, location, category badge, total time, segment bar.
 2. **Splits comparison**: a table with rows swim, T1, bike, T2, run, total; columns
    official, recorded, Δ. Derived transitions are annotated. Unknown values show as "—".
 3. **Course map**: Leaflet with OSM tiles, one polyline per segment in the sport colours,
    fitted to the session bounding boxes.
-4. **Pacing chart**: hand-written SVG, one sport at a time. Which series exist depends on
+4. **Pacing chart**: Chart.js line chart, one sport at a time. Which series exist depends on
    what was recorded, not on the sport ([Trap 2](../reference/fit-files.md#trap-2),
    [Trap 7](../reference/fit-files.md#trap-7)): a run may have pace/HR/power, a bike
    6–8 coarse 5 km points, and a one-lap swim is a summary tile rather than a line.
@@ -65,3 +66,5 @@ hundred points per segment (`services/geo.py`).
 - The Apple fixture's swim renders as a summary tile; the Garmin fixture's swim renders as
   a 4-point line.
 - `/track` for a visitor is always simplified, whatever `precision` is requested.
+- `/races/{id}` for a public race has its name in `og:title`; a hidden race and a
+  nonexistent id return byte-identical generic shells.

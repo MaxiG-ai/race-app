@@ -4,7 +4,7 @@
 
 ## Goal
 
-Two races of the same category side by side, at `compare.html?a=<id>&b=<id>`, reachable
+Two races of the same category side by side, at `/compare?a=<id>&b=<id>`, reachable
 from a "Compare" action on any race. The centrepiece is a gap chart: one race is pinned
 flat at zero as the reference, and the other is drawn as its time gap from it at each
 checkpoint.
@@ -62,11 +62,12 @@ Alignment happens on the server (`services/comparison.py`); the page only draws.
 
 ### The gap chart
 
-Hand-written SVG. The form follows TriRating's progression charts: **one panel**, with
-the reference race flat at zero.
+Drawn with Chart.js ([visual-system](../design/visual-system.md#charts)). The form
+follows TriRating's progression charts: **one panel**, with the reference race flat at
+zero.
 
-- **Y axis:** time behind the reference, **increasing downward**. Falling away means
-  losing time, which is how the sport talks about it.
+- **Y axis:** time behind the reference, **increasing downward** (`reverse: true` on the
+  y scale). Falling away means losing time, which is how the sport talks about it.
 - **X axis:** discrete checkpoints, not continuous distance.
   - Segment boundaries are always checkpoints: Start, Swim, T1, T2, Finish. They exist
     even for a race entered only as official splits.
@@ -74,11 +75,15 @@ the reference race flat at zero.
   - When both races' segment distances agree within 5 %, checkpoints sit at absolute
     distances (`20k`, `40k`). When they don't, they fall back to even fractions of the
     segment, labelled with the reference race's distances and marked as normalised.
-- **Straight lines between checkpoints.** No smoothing: a curve would imply per-second
-  knowledge the checkpoint data doesn't have.
+- **Straight lines between checkpoints** (`tension: 0`). No smoothing: a curve would
+  imply per-second knowledge the checkpoint data doesn't have. Checkpoints are a
+  `linear` x scale at their cumulative position, with tick labels set per checkpoint, so
+  uneven spacing stays honest. A `category` scale would space them evenly.
 - **Fill:** diverging colours: teal where the compared race was faster, brick where it was
   slower, neutral grey zero line ([visual-system](../design/visual-system.md#colour)).
-  Never red/green.
+  Chart.js does this natively with `fill: {target: 'origin', above, below}`. Never
+  red/green. Segment boundaries are vertical rules with text labels, drawn by a small
+  inline plugin in `charts.js`, since hue is already taken by the fill.
 - **Invariant:** the gap at each segment boundary equals the cumulative split delta. The Δ
   strip is this curve sampled at five points; if they ever disagree, one of them is wrong.
 - **Degradation:** a race with no recorded stream renders from official splits alone

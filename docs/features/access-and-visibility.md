@@ -92,6 +92,10 @@ whole site is a deployment decision and should be visible in the deployment conf
 Child resources (`/races/{id}/track`, `/laps`, `/compare/{a}/{b}`) resolve their race
 through the same helper first. A comparison involving one hidden race is a 404.
 
+The page shells behind [link previews](../architecture.md#link-previews) use the same
+helper. A hidden race gets the generic shell, the same as an id that doesn't exist, so
+its name never appears in the HTML `<head>`.
+
 ### Redaction
 
 Some data is for the owner only, even on a public race. Anonymous responses use
@@ -146,3 +150,4 @@ never goes public by accident. Publishing is always a deliberate click.
 - Every write route without a session → 401 in both modes. Enumerate all mounted write
   routes in the test so a new one can't slip past.
 - New imports and new manual races have `is_public = false`.
+- The page shell for a hidden race is identical to the one for a nonexistent id.

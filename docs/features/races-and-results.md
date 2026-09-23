@@ -50,7 +50,7 @@ official_result               1:1 with race, typed in by hand
 
 ## UI
 
-`admin/race-edit.html?id=`: sections for metadata, official result, fueling, gear, category
+`admin/race-edit.html?id=` (owner only, so it needs no link preview): sections for metadata, official result, fueling, gear, category
 and visibility. Each field **autosaves on blur**; there is no submit button and no form-level
 validation step. A quiet completeness checklist sits at the side.
 

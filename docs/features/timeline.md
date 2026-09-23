@@ -46,7 +46,7 @@ rows' totals.
 - **Timeline spine**: a vertical line with one dot per race. It's the signature element
   ([visual-system](../design/visual-system.md#signature-element)).
 - **Race card**: name, date, category badge, total time, segment bar. The whole card links
-  to `race.html?id=`.
+  to `/races/{id}`.
 - **Segment bar**: swim/bike/run widths proportional to time; transitions are neutral
   hairline slivers, and derived ones are hatched. The detail page reuses it.
 - **Stat strip**: deliberately a single line, not a dashboard. Browsing the timeline is the main thing

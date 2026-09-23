@@ -5,11 +5,11 @@
 ```
  browser                           one Python process                    PostgreSQL
 ┌───────────────────┐   HTTP    ┌────────────────────────────┐        ┌──────────────┐
-│ static HTML pages │ ────────► │ /            static files  │        │              │
-│ ES modules, CSS   │  JSON     │ /api/*       JSON API      │ ─────► │  races, ...  │
-│ Leaflet (vendored)│ ◄──────── │ import pipeline            │        │  (jsonb)     │
-└───────────────────┘           │ weather enrichment         │        └──────────────┘
-                                └────────────────────────────┘
+│ HTML pages        │ ────────► │ /, /races/…  page shells   │        │              │
+│ ES modules, CSS   │  JSON     │ /static/*    static files  │ ─────► │  races, ...  │
+│ Leaflet, Chart.js │ ◄──────── │ /api/*       JSON API      │        │  (jsonb)     │
+│ (vendored)        │           │ import pipeline, weather   │        └──────────────┘
+└───────────────────┘           └────────────────────────────┘
                                           │
                                   uploaded FIT originals
                                   on a mounted volume
@@ -20,6 +20,11 @@
   proxy in front adds TLS and nothing else ([deployment](operations/deployment.md)).
 - **The frontend is files, not a build.** HTML pages load ES modules straight from
   `/static/js/`. What is in the repository is exactly what the browser gets.
+- **Public pages are served through a thin shell.** `/`, `/races/{id}` and `/compare`
+  are routes on the backend that return the page's static HTML with `<title>` and
+  Open Graph tags filled in, so shared links get a proper preview
+  ([Link previews](#link-previews)). Everything else on the page is still rendered by JS
+  from the JSON API.
 - **The JSON API is the only coupling.** Pages fetch JSON and render it. The public site and
   the owner's editing views use the same read endpoints; write endpoints are
   owner-only ([access-and-visibility](features/access-and-visibility.md)).
@@ -34,37 +39,39 @@ not a reason.
 
 | Package | Why | How it ships |
 |---|---|---|
-| Leaflet | Tiled slippy maps are real work to get right | vendored into `static/vendor/leaflet/`, pinned version, no CDN |
+| Leaflet | Tiled slippy maps are real work to get right | vendored into `static/vendor/leaflet/`, pinned version |
+| Chart.js | Line charts with axes, tooltips and fills; plain JS, no dependencies, and it covers the gap chart's needs out of the box ([visual-system](design/visual-system.md#charts)) | vendored `chart.umd.min.js` in `static/vendor/chartjs/`, pinned version |
 
-That is the whole list. Charts (segment bar, pacing chart, gap chart) are hand-written
-SVG: each one is a few hundred lines at most, and a charting library would be the biggest
-thing on every page. Forms use native HTML validation. Routing is separate HTML pages,
-with no client-side router.
+That is the whole list. Libraries are vendored rather than loaded from a CDN: a
+self-hosted instance shouldn't depend on a third party being up, and a pinned file in the
+repository can be reviewed. The segment bar isn't a chart: it's a row of `<div>`s with
+widths set in CSS. Forms use native HTML validation. There is no client-side router;
+every page is its own HTML file.
 
 ### Backend
 
-Required, with no reasonable alternative:
+The backend can carry more than the frontend. A well-known framework stack is worth
+its weight here, because it handles validation, partial updates and migrations, which
+are fiddly to write by hand.
 
 | Package | Why |
 |---|---|
-| `fitdecode` | FIT parsing; handles Garmin's undecoded proprietary messages without errors ([fit-files](reference/fit-files.md#library)) |
+| FastAPI + uvicorn | HTTP framework; router-level dependencies are how owner-only writes are enforced ([access](features/access-and-visibility.md#enforcement-lives-in-two-places)); `/docs` for free |
+| Pydantic v2 | request/response models; `exclude_unset` gives the "field left out vs explicit null" distinction partial writes need; separate public and owner response shapes |
+| SQLAlchemy 2.0 | ORM, `Mapped[...]` / `mapped_column` style, `DeclarativeBase` |
+| Alembic | migrations; run on startup |
 | `psycopg` (3) | PostgreSQL driver |
+| `fitdecode` | FIT parsing; handles Garmin's undecoded proprietary messages without errors ([fit-files](reference/fit-files.md#library)) |
 | `argon2-cffi` | password hashing for the owner login |
-
-To decide before implementation starts (see Open questions):
-
-| Need | Option A — smaller | Option B — more done for us |
-|---|---|---|
-| HTTP framework | Starlette + uvicorn | FastAPI (Starlette + Pydantic + OpenAPI docs) |
-| Request validation | small hand-written validators | Pydantic v2 |
-| SQL | hand-written SQL through psycopg | SQLAlchemy 2.0 Core |
-| Migrations | numbered `.sql` files + a 40-line runner | Alembic |
+| `pydantic-settings` | env-driven config |
 
 Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
 `secrets` + a `session` table instead of a JWT library, `hashlib` for content hashes,
 `zoneinfo` for local race dates.
 
-Dev-only: `pytest`, `ruff`. Everything is run through `uv`.
+Dev-only: `pytest`, `ruff`, `httpx` (FastAPI's test client), `fit-tool` (writes the
+synthetic FIT fixtures; [fit-files](reference/fit-files.md#testing-without-the-originals)).
+Everything is run through `uv`.
 
 ## Repository layout
 
@@ -73,26 +80,30 @@ race-app/
   backend/
     pyproject.toml, uv.lock
     app/
-      main.py           app factory, mounts /api and /static
-      config.py         env-driven settings (SITE_MODE, DATABASE_URL, ...)
-      db.py             connection pool, transaction helper
-      access.py         owner session, viewer resolution, visibility filter
-      api/              one module per feature: races, uploads, gear, ...
+      main.py           app factory; mounts /api, /static and the page shells
+      config.py         pydantic-settings (SITE_MODE, DATABASE_URL, ...)
+      db.py             engine, session dependency, DeclarativeBase
+      access.py         owner session, viewer resolution, visible_race(s)
+      models/           SQLAlchemy models, one module per feature
+      schemas/          Pydantic models; owner and public shapes side by side
+      routers/          one module per feature; read and owner-only write routers
+      pages.py          page shells with <title> / Open Graph tags
       services/         fit_import, grouping, gear, weather, classify, comparison, geo
-      migrations/       0001_init.sql, 0002_..., run on startup
+      migrations/       Alembic
       cli.py            create-owner, set-password, reimport
     tests/
-      fixtures/         synthetic FIT files, generated (see reference/fit-files.md)
+      fixtures/         synthetic FIT files + the fit-tool script that generates them
       fixtures/private/ gitignored — your own real files, tests skip when absent
   frontend/
-    index.html          timeline
-    race.html           race detail (?id=)
-    compare.html        comparison (?a=&b=)
-    admin/              import, edit, gear — owner only
+    index.html          timeline            served at /
+    race.html           race detail         served at /races/{id}
+    compare.html        comparison          served at /compare?a=&b=
+    login.html
+    admin/              import, edit, gear — owner only, plain static files
     static/
       css/              tokens.css, base.css, one file per page
-      js/               api.js, format.js, svg.js, one module per page
-      vendor/leaflet/
+      js/               api.js, format.js, charts.js, one module per page
+      vendor/leaflet/, vendor/chartjs/
   docs/
   docker-compose.yml    app + db, local and self-hosted
   Caddyfile             only for the public deployment
@@ -119,14 +130,29 @@ These apply across every feature and do not get restated in feature files.
 - **CSS:** design tokens as custom properties in `tokens.css`; never raw hex outside it.
   Numeric columns get `.tnum` (tabular numerals).
 
+## Link previews
+
+A link to a public race should unfurl in a chat or a social post with the race name,
+date and result, not a blank "Race history". Crawlers don't run JS, so these tags have to
+be in the HTML the server sends.
+
+- `pages.py` serves `index.html`, `race.html` and `compare.html` through backend routes.
+  It reads the static file and fills a placeholder in `<head>` with `<title>`,
+  `<meta name="description">`, and `og:title` / `og:description` / `og:url` /
+  `og:type` / `og:site_name`, all `html.escape`d. That's string substitution, not a
+  template engine.
+- Example for a race: `og:title` "Example Triathlon — Sprintdistanz",
+  `og:description` "21 Jun 2026 · 1:12:40 · swim 12:03 · bike 35:10 · run 21:40".
+- **Visibility applies to previews too.** A race the viewer can't see gets the generic
+  site shell, exactly the same as a nonexistent id, so the preview never leaks a hidden
+  race's name. In private mode every shell is generic.
+- Compare pages preview as "A vs B" only when both races are public.
+- No `og:image` in the first version. A rendered course thumbnail is in the
+  [backlog](backlog.md).
+
 ## Open questions
 
-- **Framework and SQL layer.** Pick A or B in each row of the backend table above. A
-  suggestion: Starlette + hand-written SQL + `.sql` migrations fits the "few dependencies"
-  goal best, and the schema is small enough (about a dozen tables) that an ORM saves
-  little. Pydantic is the strongest case for option B: partial-update validation with
-  `exclude_unset` is fiddly to write by hand.
-- **Server-rendered HTML for public pages.** Public race pages built in JS are invisible
-  to link previews and search engines. Option: the backend renders a minimal HTML shell
-  with `<title>` and Open Graph tags per race, and JS fills in the rest. Worth deciding
-  before the public page templates are built.
+- **JSDoc types from OpenAPI.** FastAPI publishes an OpenAPI schema. A small script could
+  generate the JSDoc typedefs in `static/js/types.js` from it, so the frontend's types
+  can't drift from the Pydantic models. Worth doing once the API settles; until then,
+  write them by hand.

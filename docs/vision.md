@@ -25,8 +25,9 @@ course map and pacing, and records weather, fueling and gear.
   difference between the modes is whether *reading* needs it too. See
   [access-and-visibility](features/access-and-visibility.md).
 - **Few dependencies, each one chosen on purpose.** Python backend, plain HTML + CSS + JS
-  frontend with no build step. A library is only added when it does something hard, like
-  Leaflet for maps or `fitdecode` for FIT parsing. See [architecture](architecture.md#dependency-policy).
+  frontend with no build step. A frontend library is only added when it does something hard,
+  like Leaflet for maps or Chart.js for charts. The backend may use a standard framework
+  stack. See [architecture](architecture.md#dependency-policy).
 - **FIT files are the source of truth** for recorded data; official results are typed in
   by hand. Strava is secondary and deferred.
 - **Partial data is normal.** A race with just a name and a date is a valid race.
@@ -63,10 +64,11 @@ Decisions for the rewrite, newest last. Feature files hold the detail.
 | Per-race visibility | `is_public` flag, off by default; only matters in public mode | — |
 | Database | PostgreSQL, always, including local runs | PostgreSQL |
 | Frontend | plain HTML/CSS/JS, ES modules, no build step | React + Vite + TS + Tailwind + TanStack Query |
-| Backend | Python, small dependency set | FastAPI + SQLAlchemy + Alembic + Pydantic |
+| Backend | FastAPI + Pydantic v2 + SQLAlchemy 2.0 + Alembic, kept | same |
 | Maps | Leaflet, vendored | react-leaflet |
-| Charts | hand-written SVG | Recharts |
-| Test fixtures | synthetic FIT files in the repo; real files only locally, gitignored | real unanonymized files committed, repo kept private |
+| Link previews | server-filled `<title>` + Open Graph tags on public pages | — |
+| Charts | Chart.js, vendored | Recharts |
+| Test fixtures | synthetic FIT files written with `fit-tool` (dev-only); real files only locally, gitignored | real unanonymized files committed, repo kept private |
 | Publishing | repository goes public after the rewrite, from clean history | repo must stay private |
 | Classification | inferred from measured distances; manual override kept alongside | same |
 | Fueling, gear, weather, comparison | kept | same |
