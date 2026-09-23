@@ -7,9 +7,10 @@ services:
   app:
     build: .
     restart: unless-stopped
+    # Database credentials come from .env (POSTGRES_*); the app builds its URL from them.
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-race}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-race}
+      POSTGRES_HOST: db
     ports:
       - "${APP_PORT:-127.0.0.1:8000}:8000"
     volumes:
@@ -21,10 +22,8 @@ services:
   db:
     image: postgres:17-alpine
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-race}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-race}
+    # Reads POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB; refuses to start without a password.
+    env_file: .env
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

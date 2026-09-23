@@ -49,8 +49,8 @@ Twelve-factor: everything comes from env vars, and `.env.example` documents each
 | Var | Purpose |
 |---|---|
 | `SITE_MODE` | `private` \| `public`, see [access](../features/access-and-visibility.md) |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | the `db` service's credentials; compose builds `DATABASE_URL` from them |
-| `DATABASE_URL` | only when running the app outside compose |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | read by the `db` service and by the app, which builds its database URL from them (`POSTGRES_HOST`, default `localhost`, is set to `db` by compose) |
+| `DATABASE_URL` | optional; used as is instead of the `POSTGRES_*` values |
 | `APP_PORT` | host port binding for local/self-hosted runs, default `127.0.0.1:8000` |
 | `UPLOAD_DIR` | where original FIT files are kept (a mounted volume) |
 | `MAX_UPLOAD_BYTES` | per-file upload limit, default 20 MB |
