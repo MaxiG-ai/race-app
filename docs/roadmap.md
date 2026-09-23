@@ -9,10 +9,9 @@ feature files hold the detail; this page only sequences them.
       ([fit-files](reference/fit-files.md#testing-without-the-originals)).
 - [x] Move the real recordings out of the repository into your own
       `tests/fixtures/private/` (gitignored).
-- [ ] **Clean history.** Deleting the fixtures in a later commit isn't enough: the real
-      files, and v1's `PLAN.md` with sensor serials, stay in git history. Start the public
-      repository from a fresh root commit (or an orphan branch) rather than publishing
-      this history.
+- [x] ~~Clean history.~~ Dropped: the real recordings and v1's `PLAN.md` stay in git
+      history, and the owner is fine publishing them. Only the working tree has to be
+      free of real recordings.
 - [x] `LICENSE` check, `README` for self-hosters.
 
 ## Phase 1 — foundation (core)
