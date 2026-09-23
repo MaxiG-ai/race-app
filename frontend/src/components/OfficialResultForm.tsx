@@ -29,23 +29,58 @@ function isValidPlace(raw: string): boolean {
   return raw.trim() === '' || /^\d+$/.test(raw.trim())
 }
 
+/** The five legs, in course order — their sum is the total. */
+const SPLIT_FIELDS = ['swim_time', 't1_time', 'bike_time', 't2_time', 'run_time'] as const
+const SPLIT_LABELS: Record<(typeof SPLIT_FIELDS)[number], string> = {
+  swim_time: 'swim',
+  t1_time: 'T1',
+  bike_time: 'bike',
+  t2_time: 'T2',
+  run_time: 'run',
+}
+
+/** Seconds summed from the splits, or null if any is blank or unparseable. */
+function totalFromSplits(values: Partial<ResultFormValues>): number | null {
+  let sum = 0
+  for (const field of SPLIT_FIELDS) {
+    const seconds = parseDurationInput(values[field] ?? '')
+    if (seconds == null) return null
+    sum += seconds
+  }
+  return sum
+}
+
+function missingSplits(values: Partial<ResultFormValues>): string[] {
+  return SPLIT_FIELDS.filter((f) => parseDurationInput(values[f] ?? '') == null).map(
+    (f) => SPLIT_LABELS[f],
+  )
+}
+
 const timeField = z.string().refine(isValidDuration, 'Use mm:ss or h:mm:ss.')
 const placeField = z.string().refine(isValidPlace, 'Enter a whole number.')
 
-const resultSchema = z.object({
-  total_time: z
-    .string()
-    .trim()
-    .min(1, 'Enter the total time.')
-    .refine(isValidDuration, 'Use mm:ss or h:mm:ss.'),
-  swim_time: timeField,
-  t1_time: timeField,
-  bike_time: timeField,
-  t2_time: timeField,
-  run_time: timeField,
-  overall_place: placeField,
-  age_group_place: placeField,
-})
+const resultSchema = z
+  .object({
+    total_time: z.string().refine(isValidDuration, 'Use mm:ss or h:mm:ss.'),
+    swim_time: timeField,
+    t1_time: timeField,
+    bike_time: timeField,
+    t2_time: timeField,
+    run_time: timeField,
+    overall_place: placeField,
+    age_group_place: placeField,
+  })
+  // The total is required, but never something the user should have to add up: a
+  // complete set of splits stands in for it. Only when neither is present do we ask.
+  .superRefine((values, ctx) => {
+    if (values.total_time.trim() !== '') return
+    if (totalFromSplits(values) != null) return
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['total_time'],
+      message: `Enter the total time, or fill in every split so it can be calculated. Still missing: ${missingSplits(values).join(', ')}.`,
+    })
+  })
 
 type ResultFormValues = z.infer<typeof resultSchema>
 
@@ -72,6 +107,7 @@ export function OfficialResultForm({
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<ResultFormValues>({
     resolver: zodResolver(resultSchema),
@@ -87,11 +123,18 @@ export function OfficialResultForm({
     },
   })
 
+  // Live preview of what the server will store when the total is left blank, so the
+  // calculation is visible before saving rather than a surprise afterwards.
+  const watched = watch()
+  const typedTotal = (watched.total_time ?? '').trim()
+  const derivedTotal = typedTotal === '' ? totalFromSplits(watched) : null
+  const stillMissing = typedTotal === '' && derivedTotal == null ? missingSplits(watched) : []
+
   const onSubmit = async (values: ResultFormValues) => {
     setSubmitError(null)
     setSaved(false)
     const body: OfficialResultUpsert = {
-      total_time: parseDurationInput(values.total_time) ?? 0,
+      total_time: parseDurationInput(values.total_time),
       swim_time: parseDurationInput(values.swim_time),
       t1_time: parseDurationInput(values.t1_time),
       bike_time: parseDurationInput(values.bike_time),
@@ -114,7 +157,19 @@ export function OfficialResultForm({
       <h3 className="text-sm font-semibold text-ink">Official result</h3>
 
       <div className="flex flex-wrap gap-4">
-        <TimeInput name="total_time" label="Total time" register={register} error={errors.total_time?.message} />
+        <TimeInput
+          name="total_time"
+          label="Total time"
+          register={register}
+          error={errors.total_time?.message}
+          hint={
+            derivedTotal != null
+              ? `Calculated from splits: ${formatDuration(derivedTotal)}`
+              : stillMissing.length > 0
+                ? `Enter it, or fill in every split — still missing: ${stillMissing.join(', ')}.`
+                : undefined
+          }
+        />
         <TimeInput name="swim_time" label="Swim" register={register} error={errors.swim_time?.message} />
         <TimeInput name="t1_time" label="T1" register={register} error={errors.t1_time?.message} />
         <TimeInput name="bike_time" label="Bike" register={register} error={errors.bike_time?.message} />
@@ -174,11 +229,14 @@ function TimeInput({
   label,
   register,
   error,
+  hint,
 }: {
   name: keyof ResultFormValues
   label: string
   register: UseFormRegister<ResultFormValues>
   error?: string
+  /** Shown only when there is no error — guidance, not a failure. */
+  hint?: string
 }) {
   return (
     <div>
@@ -193,7 +251,11 @@ function TimeInput({
         className="w-28 rounded border border-hairline bg-bg px-2 py-1 text-sm tnum"
         {...register(name)}
       />
-      {error && <p className="mt-1 text-xs text-run">{error}</p>}
+      {error ? (
+        <p className="mt-1 text-xs text-run">{error}</p>
+      ) : (
+        hint && <p className="mt-1 max-w-[16rem] text-xs text-ink/50">{hint}</p>
+      )}
     </div>
   )
 }

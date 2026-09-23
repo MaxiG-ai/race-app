@@ -155,6 +155,60 @@
         }
       }
     },
+    "/api/categories": {
+      "get": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "List Categories",
+        "description": "Active categories in display order \u2014 backs the override picker and lets the UI\nshow a category's published range next to a race's measured distances.",
+        "operationId": "list_categories_api_categories_get",
+        "parameters": [
+          {
+            "name": "access_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RaceCategoryRead"
+                  },
+                  "title": "Response List Categories Api Categories Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/races/group": {
       "post": {
         "tags": [
@@ -361,6 +415,7 @@
           "races"
         ],
         "summary": "Create Race",
+        "description": "A manually created race gets its conditions straight away when it is given a\nlocation, since it has no import to enrich it and the date is already known.",
         "operationId": "create_race_api_races_post",
         "parameters": [
           {
@@ -477,7 +532,7 @@
           "races"
         ],
         "summary": "Update Race",
-        "description": "Metadata edit only. Editing `location_lat`/`location_lng` does **not**\nauto-refetch weather \u2014 `weather_temp_c`/`weather_humidity_pct`/\n`weather_conditions` are left exactly as they were, now potentially stale\nagainst the corrected location, until the caller explicitly hits\n`POST /races/{id}/weather/refresh`. That is a deliberate, separate action\n(re-running enrichment is not free and not always wanted), not an\noversight \u2014 documented here rather than adding a `weather_stale` field to\nthe response schema for what is a narrow edge case.",
+        "description": "Metadata edit. Changing the **date or location re-runs weather enrichment**,\nbecause those two fields are the entire input to the lookup \u2014 leaving the old\nconditions attached would keep showing yesterday's weather for a corrected date,\nwhich reads as data rather than as staleness. Any other edit leaves weather\nalone.\n\nThe refetch cannot fail the edit: `enrich_weather` swallows every failure path\nand simply leaves the existing values in place, so a slow or down archive costs\na moment, not the save. `POST /races/{id}/weather/refresh` remains available to\nforce a re-run without changing anything.",
         "operationId": "update_race_api_races__race_id__patch",
         "parameters": [
           {
@@ -641,6 +696,65 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OfficialResultRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/races/{race_id}/classify": {
+      "post": {
+        "tags": [
+          "races"
+        ],
+        "summary": "Reclassify Race",
+        "description": "Re-run classification from the current primary recordings.\n\nAlways refreshes `auto_category`; only moves the assigned category when the user has\nnot overridden it. Useful after correcting a distance, switching which recording is\nprimary, or editing the category table itself.",
+        "operationId": "reclassify_race_api_races__race_id__classify_post",
+        "parameters": [
+          {
+            "name": "race_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Race Id"
+            }
+          },
+          {
+            "name": "access_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RaceRead"
                 }
               }
             }
@@ -895,7 +1009,7 @@
           "races"
         ],
         "summary": "Refresh Weather",
-        "description": "Re-run weather enrichment \u2014 for a race whose location was corrected\nafter import. Anchors the lookup to the earliest `is_primary` activity's\n`start_time` (the race itself only stores a plain local `date`, not a\ntime-of-day). `overwrite=True` \u2014 unlike import-time enrichment, this is a\ndeliberate re-run and should replace whatever is there, including a\npreviously-populated humidity value.",
+        "description": "Re-run weather enrichment for a race whose date or location was corrected\nafter import \u2014 and the way a manually entered race, which has no recording to\nanchor to, gets its conditions at all.\n\n`overwrite=True`: unlike import-time enrichment this is a deliberate re-run,\nso it replaces whatever is there, including a previously-populated humidity.",
         "operationId": "refresh_weather_api_races__race_id__weather_refresh_post",
         "parameters": [
           {
@@ -1715,6 +1829,26 @@
           "files"
         ],
         "title": "Body_create_uploads_api_uploads_post"
+      },
+      "CategoryKind": {
+        "type": "string",
+        "enum": [
+          "distance",
+          "age_class",
+          "relay"
+        ],
+        "title": "CategoryKind",
+        "description": "What kind of category a `RaceCategory` row is.\n\nThe published DTU list mixes three things. Age classes (Sch\u00fcler, Jugend, Junioren)\ndescribe the *athlete*, and their distances overlap the open categories almost\nentirely \u2014 Junioren is 0.75-1.5 / 20-40 / 5-10 against Kurzdistanz's 1.5 / 40 / 10 \u2014\nso a course cannot tell you which applies. Mixed Relay is a team format. Only\n`DISTANCE` rows are eligible for automatic classification (\u00a79)."
+      },
+      "ClassificationSource": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "manual",
+          "unclassified"
+        ],
+        "title": "ClassificationSource",
+        "description": "Where a race's assigned category came from."
       },
       "FuelingProduct": {
         "properties": {
@@ -2539,7 +2673,14 @@
       "OfficialResultUpsert": {
         "properties": {
           "total_time": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Total Time"
           },
           "swim_time": {
@@ -2621,11 +2762,8 @@
           }
         },
         "type": "object",
-        "required": [
-          "total_time"
-        ],
         "title": "OfficialResultUpsert",
-        "description": "`PUT /races/{id}/official-result` body."
+        "description": "`PUT /races/{id}/official-result` body.\n\n`total_time` is optional *here* but NOT NULL in the database: omit it and the server\nsums the five splits. If any split is also missing there is nothing to sum, and the\nrequest is refused with a message naming what to fill in \u2014 no zero, no guess."
       },
       "RaceAttachRequest": {
         "properties": {
@@ -2657,6 +2795,116 @@
         ],
         "title": "RaceAttachRequest",
         "description": "`POST /races/{id}/attach` body \u2014 attach further uploads to an existing\nrace, e.g. backfilling a leg or replacing one recorded from the wrong device."
+      },
+      "RaceCategoryRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CategoryKind"
+          },
+          "sort_order": {
+            "type": "integer",
+            "title": "Sort Order"
+          },
+          "swim_min_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swim Min M"
+          },
+          "swim_max_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Swim Max M"
+          },
+          "bike_min_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bike Min M"
+          },
+          "bike_max_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bike Max M"
+          },
+          "run_min_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Min M"
+          },
+          "run_max_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Max M"
+          },
+          "tolerance_pct": {
+            "type": "number",
+            "title": "Tolerance Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "kind",
+          "sort_order",
+          "swim_min_m",
+          "swim_max_m",
+          "bike_min_m",
+          "bike_max_m",
+          "run_min_m",
+          "run_max_m",
+          "tolerance_pct"
+        ],
+        "title": "RaceCategoryRead",
+        "description": "A row of the distance-category table (\u00a79)."
       },
       "RaceCreate": {
         "properties": {
@@ -2702,9 +2950,6 @@
             ],
             "title": "Location Lng"
           },
-          "race_type": {
-            "$ref": "#/components/schemas/RaceType"
-          },
           "notes": {
             "anyOf": [
               {
@@ -2720,11 +2965,10 @@
         "type": "object",
         "required": [
           "name",
-          "date",
-          "race_type"
+          "date"
         ],
         "title": "RaceCreate",
-        "description": "`POST /races` \u2014 manual race creation."
+        "description": "`POST /races` \u2014 manual race creation.\n\nNo category: it is inferred from the measured distances once activities land (\u00a79).\nA race created by hand with no recordings stays unclassified until either an import\narrives or the user picks a category themselves."
       },
       "RaceDetail": {
         "properties": {
@@ -2770,9 +3014,6 @@
             ],
             "title": "Location Lng"
           },
-          "race_type": {
-            "$ref": "#/components/schemas/RaceType"
-          },
           "notes": {
             "anyOf": [
               {
@@ -2791,6 +3032,41 @@
           "user_id": {
             "type": "integer",
             "title": "User Id"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RaceCategoryRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RaceCategoryRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "classification_source": {
+            "$ref": "#/components/schemas/ClassificationSource"
+          },
+          "classification_detail": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Detail"
           },
           "weather_temp_c": {
             "anyOf": [
@@ -2866,9 +3142,9 @@
         "required": [
           "name",
           "date",
-          "race_type",
           "id",
           "user_id",
+          "classification_source",
           "weather_temp_c",
           "weather_humidity_pct",
           "weather_conditions",
@@ -3063,8 +3339,15 @@
             "format": "date",
             "title": "Date"
           },
-          "race_type": {
-            "$ref": "#/components/schemas/RaceType"
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RaceCategoryRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "location_name": {
             "anyOf": [
@@ -3121,7 +3404,6 @@
           "id",
           "name",
           "date",
-          "race_type",
           "location_name"
         ],
         "title": "RaceListItem",
@@ -3203,9 +3485,6 @@
             ],
             "title": "Location Lng"
           },
-          "race_type": {
-            "$ref": "#/components/schemas/RaceType"
-          },
           "notes": {
             "anyOf": [
               {
@@ -3224,6 +3503,41 @@
           "user_id": {
             "type": "integer",
             "title": "User Id"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RaceCategoryRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RaceCategoryRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "classification_source": {
+            "$ref": "#/components/schemas/ClassificationSource"
+          },
+          "classification_detail": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Detail"
           },
           "weather_temp_c": {
             "anyOf": [
@@ -3273,9 +3587,9 @@
         "required": [
           "name",
           "date",
-          "race_type",
           "id",
           "user_id",
+          "classification_source",
           "weather_temp_c",
           "weather_humidity_pct",
           "weather_conditions",
@@ -3299,17 +3613,6 @@
           "segments"
         ],
         "title": "RaceTrackResponse"
-      },
-      "RaceType": {
-        "type": "string",
-        "enum": [
-          "sprint",
-          "olympic",
-          "half_iron",
-          "full_iron",
-          "custom"
-        ],
-        "title": "RaceType"
       },
       "RaceUpdate": {
         "properties": {
@@ -3369,16 +3672,6 @@
             ],
             "title": "Location Lng"
           },
-          "race_type": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RaceType"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "notes": {
             "anyOf": [
               {
@@ -3389,6 +3682,17 @@
               }
             ],
             "title": "Notes"
+          },
+          "race_category_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Race Category Id"
           }
         },
         "type": "object",

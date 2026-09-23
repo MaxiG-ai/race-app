@@ -8,13 +8,13 @@ import type { components } from './api'
 type S = components['schemas']
 
 export type Segment = S['Segment']
-export type RaceType = S['RaceType']
 export type GearKind = S['GearKind']
 
 export type RaceListItem = S['RaceListItem']
 export type RaceListResponse = S['RaceListResponse']
 export type SegmentSummary = S['SegmentSummary']
 export type RaceRead = S['RaceRead']
+export type RaceCategoryRead = S['RaceCategoryRead']
 export type RaceDetail = S['RaceDetail']
 export type RaceCreate = S['RaceCreate']
 export type RaceUpdate = S['RaceUpdate']

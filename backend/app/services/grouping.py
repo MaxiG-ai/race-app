@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadStatus
+from app.models.enums import Segment, Sport, UploadKind, UploadStatus
 from app.models.race import Race
 from app.models.recorded_activity import RecordedActivity
 from app.models.upload import Upload
@@ -311,7 +311,6 @@ def create_race_from_uploads(
         location_name=None,
         location_lat=lat,
         location_lng=lng,
-        race_type=RaceType.CUSTOM,
     )
     db.add(race)
     db.flush()

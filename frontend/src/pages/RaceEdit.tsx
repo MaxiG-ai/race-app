@@ -4,6 +4,7 @@ import { ApiError } from '@/api/client'
 import { useDeleteRace, useRace } from '@/api/races'
 import { FuelingForm } from '@/components/FuelingForm'
 import { OfficialResultForm } from '@/components/OfficialResultForm'
+import { CategoryField } from '@/components/CategoryField'
 import { RaceForm } from '@/components/RaceForm'
 import type { RaceDetail as RaceDetailType } from '@/types'
 
@@ -32,6 +33,8 @@ export default function RaceEdit() {
       </div>
 
       <RaceForm race={race} />
+
+      <CategoryField race={race} />
       <hr className="border-hairline" />
       <OfficialResultForm raceId={race.id} result={race.official_result} />
       <hr className="border-hairline" />

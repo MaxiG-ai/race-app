@@ -11,7 +11,6 @@ import { SplitsChart } from '@/components/SplitsChart'
 import { SplitsComparison } from '@/components/SplitsComparison'
 import { buildSegmentRows, toSegmentSummaries } from '@/lib/splits'
 import {
-  RACE_TYPE_LABEL,
   SEGMENT_LABEL,
   SEGMENT_ORDER,
   formatDate,
@@ -116,7 +115,7 @@ export default function RaceDetail() {
           <div>
             <h1 className="text-xl font-semibold text-ink">{race.name}</h1>
             <p className="mt-1 text-sm text-ink/60">
-              {formatDate(race.date)} &middot; {RACE_TYPE_LABEL[race.race_type] ?? race.race_type}
+              {formatDate(race.date)} &middot; {race.category?.label ?? 'Unclassified'}
               {race.location_name ? ` · ${race.location_name}` : ''}
             </p>
           </div>

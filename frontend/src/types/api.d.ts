@@ -89,6 +89,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Categories
+         * @description Active categories in display order — backs the override picker and lets the UI
+         *     show a category's published range next to a race's measured distances.
+         */
+        get: operations["list_categories_api_categories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/races/group": {
         parameters: {
             query?: never;
@@ -150,7 +171,11 @@ export interface paths {
          */
         get: operations["list_races_api_races_get"];
         put?: never;
-        /** Create Race */
+        /**
+         * Create Race
+         * @description A manually created race gets its conditions straight away when it is given a
+         *     location, since it has no import to enrich it and the date is already known.
+         */
         post: operations["create_race_api_races_post"];
         delete?: never;
         options?: never;
@@ -185,14 +210,16 @@ export interface paths {
         head?: never;
         /**
          * Update Race
-         * @description Metadata edit only. Editing `location_lat`/`location_lng` does **not**
-         *     auto-refetch weather — `weather_temp_c`/`weather_humidity_pct`/
-         *     `weather_conditions` are left exactly as they were, now potentially stale
-         *     against the corrected location, until the caller explicitly hits
-         *     `POST /races/{id}/weather/refresh`. That is a deliberate, separate action
-         *     (re-running enrichment is not free and not always wanted), not an
-         *     oversight — documented here rather than adding a `weather_stale` field to
-         *     the response schema for what is a narrow edge case.
+         * @description Metadata edit. Changing the **date or location re-runs weather enrichment**,
+         *     because those two fields are the entire input to the lookup — leaving the old
+         *     conditions attached would keep showing yesterday's weather for a corrected date,
+         *     which reads as data rather than as staleness. Any other edit leaves weather
+         *     alone.
+         *
+         *     The refetch cannot fail the edit: `enrich_weather` swallows every failure path
+         *     and simply leaves the existing values in place, so a slow or down archive costs
+         *     a moment, not the save. `POST /races/{id}/weather/refresh` remains available to
+         *     force a re-run without changing anything.
          */
         patch: operations["update_race_api_races__race_id__patch"];
         trace?: never;
@@ -208,6 +235,30 @@ export interface paths {
         /** Upsert Official Result */
         put: operations["upsert_official_result_api_races__race_id__official_result_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/races/{race_id}/classify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reclassify Race
+         * @description Re-run classification from the current primary recordings.
+         *
+         *     Always refreshes `auto_category`; only moves the assigned category when the user has
+         *     not overridden it. Useful after correcting a distance, switching which recording is
+         *     primary, or editing the category table itself.
+         */
+        post: operations["reclassify_race_api_races__race_id__classify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -298,12 +349,12 @@ export interface paths {
         put?: never;
         /**
          * Refresh Weather
-         * @description Re-run weather enrichment — for a race whose location was corrected
-         *     after import. Anchors the lookup to the earliest `is_primary` activity's
-         *     `start_time` (the race itself only stores a plain local `date`, not a
-         *     time-of-day). `overwrite=True` — unlike import-time enrichment, this is a
-         *     deliberate re-run and should replace whatever is there, including a
-         *     previously-populated humidity value.
+         * @description Re-run weather enrichment for a race whose date or location was corrected
+         *     after import — and the way a manually entered race, which has no recording to
+         *     anchor to, gets its conditions at all.
+         *
+         *     `overwrite=True`: unlike import-time enrichment this is a deliberate re-run,
+         *     so it replaces whatever is there, including a previously-populated humidity.
          */
         post: operations["refresh_weather_api_races__race_id__weather_refresh_post"];
         delete?: never;
@@ -525,6 +576,24 @@ export interface components {
             /** Race Id */
             race_id?: number | null;
         };
+        /**
+         * CategoryKind
+         * @description What kind of category a `RaceCategory` row is.
+         *
+         *     The published DTU list mixes three things. Age classes (Schüler, Jugend, Junioren)
+         *     describe the *athlete*, and their distances overlap the open categories almost
+         *     entirely — Junioren is 0.75-1.5 / 20-40 / 5-10 against Kurzdistanz's 1.5 / 40 / 10 —
+         *     so a course cannot tell you which applies. Mixed Relay is a team format. Only
+         *     `DISTANCE` rows are eligible for automatic classification (§9).
+         * @enum {string}
+         */
+        CategoryKind: "distance" | "age_class" | "relay";
+        /**
+         * ClassificationSource
+         * @description Where a race's assigned category came from.
+         * @enum {string}
+         */
+        ClassificationSource: "auto" | "manual" | "unclassified";
         /**
          * FuelingProduct
          * @description One entry of `RaceFueling.products` — free-form, not a normalised catalogue
@@ -778,10 +847,14 @@ export interface components {
         /**
          * OfficialResultUpsert
          * @description `PUT /races/{id}/official-result` body.
+         *
+         *     `total_time` is optional *here* but NOT NULL in the database: omit it and the server
+         *     sums the five splits. If any split is also missing there is nothing to sum, and the
+         *     request is refused with a message naming what to fill in — no zero, no guess.
          */
         OfficialResultUpsert: {
             /** Total Time */
-            total_time: number;
+            total_time?: number | null;
             /** Swim Time */
             swim_time?: number | null;
             /** T1 Time */
@@ -811,8 +884,41 @@ export interface components {
             } | null;
         };
         /**
+         * RaceCategoryRead
+         * @description A row of the distance-category table (§9).
+         */
+        RaceCategoryRead: {
+            /** Id */
+            id: number;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            kind: components["schemas"]["CategoryKind"];
+            /** Sort Order */
+            sort_order: number;
+            /** Swim Min M */
+            swim_min_m: number | null;
+            /** Swim Max M */
+            swim_max_m: number | null;
+            /** Bike Min M */
+            bike_min_m: number | null;
+            /** Bike Max M */
+            bike_max_m: number | null;
+            /** Run Min M */
+            run_min_m: number | null;
+            /** Run Max M */
+            run_max_m: number | null;
+            /** Tolerance Pct */
+            tolerance_pct: number;
+        };
+        /**
          * RaceCreate
          * @description `POST /races` — manual race creation.
+         *
+         *     No category: it is inferred from the measured distances once activities land (§9).
+         *     A race created by hand with no recordings stays unclassified until either an import
+         *     arrives or the user picks a category themselves.
          */
         RaceCreate: {
             /** Name */
@@ -828,7 +934,6 @@ export interface components {
             location_lat?: number | null;
             /** Location Lng */
             location_lng?: number | null;
-            race_type: components["schemas"]["RaceType"];
             /** Notes */
             notes?: string | null;
         };
@@ -853,13 +958,19 @@ export interface components {
             location_lat?: number | null;
             /** Location Lng */
             location_lng?: number | null;
-            race_type: components["schemas"]["RaceType"];
             /** Notes */
             notes?: string | null;
             /** Id */
             id: number;
             /** User Id */
             user_id: number;
+            category?: components["schemas"]["RaceCategoryRead"] | null;
+            auto_category?: components["schemas"]["RaceCategoryRead"] | null;
+            classification_source: components["schemas"]["ClassificationSource"];
+            /** Classification Detail */
+            classification_detail?: {
+                [key: string]: unknown;
+            } | null;
             /** Weather Temp C */
             weather_temp_c: number | null;
             /** Weather Humidity Pct */
@@ -961,7 +1072,7 @@ export interface components {
              * Format: date
              */
             date: string;
-            race_type: components["schemas"]["RaceType"];
+            category?: components["schemas"]["RaceCategoryRead"] | null;
             /** Location Name */
             location_name: string | null;
             /**
@@ -1011,13 +1122,19 @@ export interface components {
             location_lat?: number | null;
             /** Location Lng */
             location_lng?: number | null;
-            race_type: components["schemas"]["RaceType"];
             /** Notes */
             notes?: string | null;
             /** Id */
             id: number;
             /** User Id */
             user_id: number;
+            category?: components["schemas"]["RaceCategoryRead"] | null;
+            auto_category?: components["schemas"]["RaceCategoryRead"] | null;
+            classification_source: components["schemas"]["ClassificationSource"];
+            /** Classification Detail */
+            classification_detail?: {
+                [key: string]: unknown;
+            } | null;
             /** Weather Temp C */
             weather_temp_c: number | null;
             /** Weather Humidity Pct */
@@ -1041,11 +1158,6 @@ export interface components {
             segments: components["schemas"]["SegmentTrack"][];
         };
         /**
-         * RaceType
-         * @enum {string}
-         */
-        RaceType: "sprint" | "olympic" | "half_iron" | "full_iron" | "custom";
-        /**
          * RaceUpdate
          * @description `PATCH /races/{id}` — metadata only (name, type, location, notes); every
          *     field optional.
@@ -1061,9 +1173,10 @@ export interface components {
             location_lat?: number | null;
             /** Location Lng */
             location_lng?: number | null;
-            race_type?: components["schemas"]["RaceType"] | null;
             /** Notes */
             notes?: string | null;
+            /** Race Category Id */
+            race_category_id?: number | null;
         };
         /**
          * RecordedActivityDetail
@@ -1620,6 +1733,37 @@ export interface operations {
             };
         };
     };
+    list_categories_api_categories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaceCategoryRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     group_uploads_api_races_group_post: {
         parameters: {
             query?: never;
@@ -1886,6 +2030,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OfficialResultRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reclassify_race_api_races__race_id__classify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                race_id: number;
+            };
+            cookie?: {
+                access_token?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaceRead"];
                 };
             };
             /** @description Validation Error */

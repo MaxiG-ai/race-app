@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.models.enums import Segment, UploadSource
 from app.models.lap_split import LapSplit
 from app.models.recorded_activity import RecordedActivity
+from app.services.classification import classify_race_id
 from app.services.fit_import import ParsedDevice, ParsedFile, ParsedLap, ParsedSession
 from app.services.gear import resolve_gear_for_activity
 
@@ -265,6 +266,10 @@ def persist_upload_sessions(
     db.flush()
     for segment in touched_segments:
         reconcile_primary(db, race_id=race_id, segment=segment)
+
+    # Distances only settle once primacy does, so classification runs last. A later
+    # primary switch re-runs it too (PATCH /activities/{id}).
+    classify_race_id(db, race_id)
     return activities
 
 

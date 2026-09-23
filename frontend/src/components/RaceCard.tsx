@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { SegmentBar } from './SegmentBar'
-import { RACE_TYPE_LABEL, formatDate, formatDuration } from '@/lib/format'
+import { formatDate, formatDuration } from '@/lib/format'
 import type { RaceListItem } from '@/types'
 
 /**
@@ -17,12 +17,11 @@ export function RaceCard({ race }: { race: RaceListItem }) {
 
   const noTotals = race.total_official_time_s == null && race.total_recorded_time_s == null
 
-  // `badges` already carries the race-type label today (backend derives it from
-  // `race_type`), but that's an implementation detail, not a contract — guard against
-  // it being duplicated, and fall back to deriving it ourselves if it's ever absent.
-  // RACE_TYPE_LABEL keeps the fallback human-readable rather than a raw enum value.
-  const typeLabel = RACE_TYPE_LABEL[race.race_type] ?? race.race_type
-  const badges = race.badges.includes(typeLabel) ? race.badges : [typeLabel, ...race.badges]
+  // `badges` already carries the category label (or "Unclassified" — which is
+  // information, not an empty state: it means the measured distances matched no band).
+  // Deriving it again here would only duplicate it.
+  const categoryLabel = race.category?.label ?? 'Unclassified'
+  const badges = race.badges.includes(categoryLabel) ? race.badges : [categoryLabel, ...race.badges]
 
   return (
     <Link
