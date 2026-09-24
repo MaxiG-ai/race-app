@@ -1,600 +1,492 @@
-"""Vendor-agnostic FIT file parser.
+"""FIT bytes in, normalised dataclasses out. No database, no I/O.
 
-Pure function: bytes/path in, normalized dataclasses out. No SQLAlchemy, no session,
-no I/O beyond reading the given file. See PLAN.md §3 Ingestion for the vendor quirks
-this code exists to paper over.
+The vendor behaviour this code handles is documented in docs/reference/fit-files.md;
+the trap numbers in comments refer to it.
 """
 
 from __future__ import annotations
 
+import io
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import fitdecode
 
-from app.services.tz import timezone_finder
+from app.models.enums import Segment, Sport, UploadKind
+from app.services.tz import timezone_at
 
-Segment = Literal["swim", "t1", "bike", "t2", "run"]
-Sport = Literal["swim", "bike", "run", "transition", "other"]
-
-# FIT lat/lng fields are "semicircles": a signed 32-bit int spanning -180..180 degrees.
 SEMICIRCLE_TO_DEG = 180 / 2**31
+PROGRESS_POINTS = 200
 
-# The 5-session order a multisport triathlon file is expected to follow, and the
-# (segment, expected FIT `sport` value) pair at each position.
-_EXPECTED_MULTISPORT: tuple[tuple[Segment, str], ...] = (
-    ("swim", "swimming"),
-    ("t1", "transition"),
-    ("bike", "cycling"),
-    ("t2", "transition"),
-    ("run", "running"),
+# A multisport race is swim, bike, run in this order. The transition between two legs
+# is optional: a watch that skips one records no session for it, and the import derives
+# it from the gap, as grouping does.
+_LEGS: tuple[tuple[str, Segment], ...] = (
+    ("swimming", Segment.SWIM),
+    ("cycling", Segment.BIKE),
+    ("running", Segment.RUN),
 )
-
-_FIT_SPORT_TO_SEGMENT: dict[str, Sport] = {
-    "swimming": "swim",
-    "cycling": "bike",
-    "running": "run",
-    "transition": "transition",
+_TRANSITION_AFTER = {Segment.SWIM: Segment.T1, Segment.BIKE: Segment.T2}
+_FIT_SPORT: dict[str, Sport] = {
+    "swimming": Sport.SWIM,
+    "cycling": Sport.BIKE,
+    "running": Sport.RUN,
 }
 
 
 class FitParseError(Exception):
-    """Raised when a FIT file cannot be parsed into a normalized ParsedFile.
-
-    Messages are written to be user-facing: they name what was found and what was
-    expected, since these surface directly in the upload UI.
-    """
+    """User-facing: says what was found and what was expected."""
 
 
 @dataclass
 class ParsedLap:
-    sport: Segment
     lap_index: int
     start_time: datetime
     total_time: int
     distance_m: float | None
+    elevation_gain_m: float | None
     avg_hr: int | None
     max_hr: int | None
     avg_power: int | None
     normalized_power: int | None
-    avg_speed: float | None
-    elevation_gain_m: float | None
-    cadence_avg: float | None
+    cadence_avg: int | None
     is_partial: bool
     raw_data: dict[str, Any]
 
 
 @dataclass
+class ParsedDevice:
+    manufacturer: str
+    serial_number: str
+    label: str | None
+
+    @property
+    def key(self) -> str:
+        return f"{self.manufacturer}:{self.serial_number}"
+
+
+@dataclass
 class ParsedSession:
-    segment: Segment
-    sport: Sport
+    sport: Sport | None  # None for transitions
+    segment: Segment | None  # None for a single-sport file until it is grouped
     start_time: datetime
-    end_time: datetime
     elapsed_time: int
     moving_time: int | None
-    distance_m: float
+    distance_m: float | None
     elevation_gain_m: float | None
     avg_hr: int | None
     max_hr: int | None
     avg_power: int | None
     normalized_power: int | None
-    avg_speed: float | None
-    avg_cadence: float | None
+    avg_cadence: int | None
     avg_temp_c: float | None
     rpe_estimated: float | None
-    avg_mets: float | None
-    bounds_n: float | None
-    bounds_s: float | None
-    bounds_e: float | None
-    bounds_w: float | None
+    bounds: tuple[float, float, float, float] | None  # n, s, e, w
     gps_track: list[dict[str, Any]]
+    progress_series: list[dict[str, Any]]
     laps: list[ParsedLap]
-    device_keys: list[str]
+    devices: list[ParsedDevice]
     raw_data: dict[str, Any]
 
-
-@dataclass
-class ParsedDevice:
-    manufacturer: str | None
-    serial_number: int | None
-    product: int | str | None
-    label: str | None
+    @property
+    def end_time(self) -> datetime:
+        return self.start_time + timedelta(seconds=self.elapsed_time)
 
 
 @dataclass
 class ParsedFile:
-    kind: Literal["multisport", "single_sport"]
+    kind: UploadKind
     sessions: list[ParsedSession]
-    devices: list[ParsedDevice]
-    orphan_record_count: int
-    start_time: datetime
-    end_time: datetime
     local_date: date
-    utc_offset_s: int
-    detected_sport: Sport | None
-    total_distance_m: float
-    warnings: list[str]
+    orphan_record_count: int
+    device_key: str | None  # the recording device itself, from file_id
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def start_time(self) -> datetime:
+        return self.sessions[0].start_time
+
+    @property
+    def end_time(self) -> datetime:
+        return self.sessions[-1].end_time
+
+    @property
+    def detected_sport(self) -> Sport | None:
+        if self.kind is UploadKind.MULTISPORT:
+            return None
+        return self.sessions[0].sport or Sport.OTHER
+
+    @property
+    def distance_m(self) -> float | None:
+        values = [s.distance_m for s in self.sessions if s.distance_m is not None]
+        return sum(values) if values else None
+
+    @property
+    def location(self) -> tuple[float | None, float | None]:
+        """Centroid of every session's bounding box: a draft location the owner can fix."""
+        boxes = [s.bounds for s in self.sessions if s.bounds]
+        if not boxes:
+            return None, None
+        n, s = max(b[0] for b in boxes), min(b[1] for b in boxes)
+        e, w = max(b[2] for b in boxes), min(b[3] for b in boxes)
+        return (n + s) / 2, (e + w) / 2
 
 
-# --------------------------------------------------------------------------- #
-# Public entry point
-# --------------------------------------------------------------------------- #
-
-
-def parse_fit(data: bytes | Path, *, filename: str | None = None) -> ParsedFile:
-    """Parse a FIT file's bytes (or a path to one) into a normalized ParsedFile.
-
-    Raises FitParseError for anything that would otherwise result in a half-imported
-    file: corrupt frames, an unexpected session count/order, or a record matching
-    more than one session window.
-    """
-    raw_bytes = data.read_bytes() if isinstance(data, Path) else data
-    suffix = f" ({filename})" if filename else ""
-
-    sessions_raw: list[dict[str, Any]] = []
-    laps_raw: list[dict[str, Any]] = []
-    records_raw: list[dict[str, Any]] = []
-    device_infos_raw: list[dict[str, Any]] = []
+def parse_fit(data: bytes) -> ParsedFile:
+    """Raises FitParseError for anything that would otherwise half-import a file."""
+    sessions: list[dict[str, Any]] = []
+    laps: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
+    device_infos: list[dict[str, Any]] = []
     tcorr: dict[str, Any] | None = None
-
+    file_id: dict[str, Any] = {}
     try:
-        with fitdecode.FitReader(_as_stream(raw_bytes)) as fit:
-            for frame in fit:
+        with fitdecode.FitReader(io.BytesIO(data)) as reader:
+            for frame in reader:
                 if not isinstance(frame, fitdecode.FitDataMessage):
                     continue
-                name = frame.name
-                fields = _frame_fields(frame)
-                if name == "record":
-                    records_raw.append(fields)
-                elif name == "session":
-                    sessions_raw.append(fields)
-                elif name == "lap":
-                    laps_raw.append(fields)
-                elif name == "device_info":
-                    device_infos_raw.append(fields)
-                elif name == "timestamp_correlation" and tcorr is None:
-                    tcorr = fields
-    except fitdecode.FitError as exc:
-        raise FitParseError(f"Could not parse FIT file{suffix}: {exc}") from exc
-    except FitParseError:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive catch-all
-        raise FitParseError(f"Unexpected error parsing FIT file{suffix}: {exc}") from exc
+                fields = {f.name or f"field_{f.def_num}": f.value for f in frame.fields}
+                match frame.name:
+                    case "record":
+                        records.append(fields)
+                    case "session":
+                        sessions.append(fields)
+                    case "lap":
+                        laps.append(fields)
+                    case "device_info":
+                        device_infos.append(fields)
+                    case "timestamp_correlation" if tcorr is None:
+                        tcorr = fields
+                    case "file_id" if not file_id:
+                        file_id = fields
+    except Exception as exc:  # fitdecode raises several unrelated types on corrupt input
+        raise FitParseError(f"Could not read the FIT file: {exc}") from exc
 
-    if not sessions_raw:
-        raise FitParseError(f"FIT file{suffix} contains no session messages.")
+    if not sessions:
+        raise FitParseError("The FIT file contains no sessions.")
+    sessions.sort(key=lambda s: s["start_time"])
+    kind, segments = _check_shape(sessions)
 
-    kind, segments = _classify_sessions(sessions_raw, suffix)
-    windows = _session_windows(sessions_raw)
-    record_buckets, orphan_count = _bucket_records(records_raw, windows)
-    lap_buckets = _bucket_leniently(laps_raw, windows, ts_key="start_time")
-    device_buckets = _bucket_leniently(device_infos_raw, windows, ts_key="timestamp")
+    windows = _windows(sessions)
+    record_buckets, orphans = _bucket_records(records, windows)
+    lap_buckets = _bucket_loosely(laps, windows, "start_time")
+    device_buckets = _bucket_loosely(device_infos, windows, "timestamp")
+    # Devices listed before the first session starts (common on Garmin) belong to it.
+    device_buckets[0].extend(d for d in device_infos if _before(d.get("timestamp"), windows))
 
-    warnings: list[str] = []
-    if orphan_count:
-        warnings.append(
-            f"{orphan_count} record(s) fell outside every session window and were dropped."
-        )
-
-    sports = [_normalize_sport(s.get("sport")) for s in sessions_raw]
-    parsed_sessions = [
-        _build_session(
-            segments[i],
-            sports[i],
-            sessions_raw[i],
-            lap_buckets[i],
-            record_buckets[i],
-            device_buckets[i],
-        )
-        for i in range(len(sessions_raw))
+    parsed = [
+        _session(segments[i], sessions[i], lap_buckets[i], record_buckets[i], device_buckets[i])
+        for i in range(len(sessions))
     ]
-
-    devices = _dedup_devices(device_infos_raw)
-
-    start_time = parsed_sessions[0].start_time
-    end_time = parsed_sessions[-1].end_time
-    total_distance = sum(s.distance_m or 0.0 for s in parsed_sessions)
-
-    local_date, utc_offset_s, tz_warning = _resolve_local_date(start_time, records_raw, tcorr)
-    if tz_warning:
-        warnings.append(tz_warning)
-
-    detected_sport = sports[0] if kind == "single_sport" else None
-
-    return ParsedFile(
-        kind=kind,
-        sessions=parsed_sessions,
-        devices=devices,
-        orphan_record_count=orphan_count,
-        start_time=start_time,
-        end_time=end_time,
-        local_date=local_date,
-        utc_offset_s=utc_offset_s,
-        detected_sport=detected_sport,
-        total_distance_m=total_distance,
-        warnings=warnings,
-    )
+    local_date, tz_warning = _local_date(parsed[0].start_time, records, tcorr)
+    warnings = [tz_warning] if tz_warning else []
+    if orphans:
+        warnings.append(f"{orphans} record(s) fell outside every session and were dropped.")
+    device_key = None
+    if file_id.get("serial_number") is not None:
+        device_key = f"{file_id.get('manufacturer') or 'unknown'}:{file_id['serial_number']}"
+    return ParsedFile(kind, parsed, local_date, orphans, device_key, warnings)
 
 
-# --------------------------------------------------------------------------- #
-# Frame reading helpers
-# --------------------------------------------------------------------------- #
+# --- shape and bucketing ----------------------------------------------------------------
 
 
-def _as_stream(raw_bytes: bytes):
-    import io
-
-    return io.BytesIO(raw_bytes)
-
-
-def _frame_fields(frame: fitdecode.FitDataMessage) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    for f in frame.fields:
-        key = f.name if f.name else f"field_{f.def_num}"
-        fields[key] = f.value
-    return fields
-
-
-# --------------------------------------------------------------------------- #
-# Session classification & windowing
-# --------------------------------------------------------------------------- #
-
-
-def _classify_sessions(
-    sessions_raw: list[dict[str, Any]], suffix: str
-) -> tuple[Literal["multisport", "single_sport"], list[Segment]]:
-    n = len(sessions_raw)
-    if n == 5:
-        found_sports = [s.get("sport") for s in sessions_raw]
-        expected_sports = [expected for _, expected in _EXPECTED_MULTISPORT]
-        if found_sports != expected_sports:
-            raise FitParseError(
-                f"FIT file{suffix} has 5 sessions but not in the expected "
-                "swim, transition, cycling, transition, running order "
-                f"(found: {found_sports!r})."
-            )
-        segments = [segment for segment, _ in _EXPECTED_MULTISPORT]
-        return "multisport", segments
-    if n == 1:
-        segment = _FIT_SPORT_TO_SEGMENT.get(sessions_raw[0].get("sport"), "other")
-        return "single_sport", [segment]
-    found_sports = [s.get("sport") for s in sessions_raw]
+def _check_shape(sessions: list[dict[str, Any]]) -> tuple[UploadKind, list[Segment | None]]:
+    found = [s.get("sport") for s in sessions]
+    if len(sessions) == 1:
+        return UploadKind.SINGLE_SPORT, [None]
+    segments: list[Segment | None] = []
+    legs = iter(_LEGS)
+    for sport in found:
+        previous = segments[-1] if segments else None
+        if sport == "transition" and previous in _TRANSITION_AFTER:
+            segments.append(_TRANSITION_AFTER[previous])  # type: ignore[index]
+            continue
+        leg = next(legs, None)
+        if leg is None or sport != leg[0]:
+            segments = []
+            break
+        segments.append(leg[1])
+    if segments and segments[-1] is Segment.RUN:
+        return UploadKind.MULTISPORT, segments
     raise FitParseError(
-        f"FIT file{suffix} has an unsupported shape: found {n} session message(s) "
-        f"(sports={found_sports!r}). Expected 1 (single-sport upload) or 5 "
-        "(swim, t1, bike, t2, run multisport race)."
+        "Expected one session, or a multisport race in the order swim, bike, run (with or "
+        f"without transitions); found {len(sessions)}: {', '.join(str(s) for s in found)}."
     )
 
 
-def _normalize_sport(fit_sport: str | None) -> Sport:
-    return _FIT_SPORT_TO_SEGMENT.get(fit_sport, "other")
+def _windows(sessions: list[dict[str, Any]]) -> list[tuple[datetime, datetime]]:
+    """Half-open [start, end) windows, each end clamped to the next start (Trap 3).
 
-
-def _session_windows(sessions_raw: list[dict[str, Any]]) -> list[tuple[datetime, datetime]]:
-    """Half-open [start, end) windows for each session, in file order.
-
-    A session's own end (start + total_elapsed_time) can run a fraction of a second
-    past the next session's recorded start (Trap 3) — clamping to the next start
-    avoids the resulting double-match without swallowing genuine gaps between
-    sessions (Trap 4), since a gap only exists when the own end is *earlier* than
-    the next start, in which case the clamp is a no-op.
+    The clamp only bites where a session's derived end runs past the next recorded
+    start; where there is a real gap it does nothing, so orphans survive (Trap 4).
     """
-    windows: list[tuple[datetime, datetime]] = []
-    n = len(sessions_raw)
-    for i, s in enumerate(sessions_raw):
+    windows = []
+    for i, s in enumerate(sessions):
         start = s["start_time"]
-        elapsed = s.get("total_elapsed_time") or 0.0
-        own_end = start + timedelta(seconds=elapsed)
-        if i + 1 < n:
-            next_start = sessions_raw[i + 1]["start_time"]
-            end = min(own_end, next_start)
-        else:
-            end = own_end
+        end = start + timedelta(seconds=s.get("total_elapsed_time") or 0)
+        if i + 1 < len(sessions):
+            end = min(end, sessions[i + 1]["start_time"])
         windows.append((start, end))
     return windows
 
 
 def _bucket_records(
-    records_raw: list[dict[str, Any]], windows: list[tuple[datetime, datetime]]
+    records: list[dict[str, Any]], windows: list[tuple[datetime, datetime]]
 ) -> tuple[list[list[dict[str, Any]]], int]:
     buckets: list[list[dict[str, Any]]] = [[] for _ in windows]
     orphans = 0
-    for r in records_raw:
+    for r in records:
         ts = r.get("timestamp")
-        if ts is None:
-            orphans += 1
-            continue
-        matches = [i for i, (start, end) in enumerate(windows) if start <= ts < end]
-        if not matches:
-            orphans += 1
-            continue
-        if len(matches) > 1:
+        hits = [i for i, (start, end) in enumerate(windows) if ts and start <= ts < end]
+        if len(hits) > 1:
             raise FitParseError(
-                f"Record at {ts.isoformat()} falls inside more than one session window "
-                f"(sessions {matches}); this indicates corrupt or overlapping session "
-                "boundaries and the file was not imported."
+                f"A record at {ts.isoformat()} falls inside more than one session; "
+                "the session boundaries are corrupt and nothing was imported."
             )
-        buckets[matches[0]].append(r)
+        if hits:
+            buckets[hits[0]].append(r)
+        else:
+            orphans += 1  # Trap 4: ordinary, dropped and counted
     return buckets, orphans
 
 
-def _bucket_leniently(
-    items: list[dict[str, Any]], windows: list[tuple[datetime, datetime]], *, ts_key: str
+def _bucket_loosely(
+    items: list[dict[str, Any]], windows: list[tuple[datetime, datetime]], key: str
 ) -> list[list[dict[str, Any]]]:
-    """Assign items (laps, device_info) to the first session window they fall in.
-
-    Unlike record bucketing, a miss or an ambiguous boundary here isn't fatal — these
-    are supplementary (pacing shape, gear hints), not the segment totals that matter.
-    """
+    """Laps and device_info: first matching window wins; a miss is not an error."""
     buckets: list[list[dict[str, Any]]] = [[] for _ in windows]
     for item in items:
-        ts = item.get(ts_key)
-        if ts is None:
-            continue
+        ts = item.get(key)
         for i, (start, end) in enumerate(windows):
-            if start <= ts < end:
+            if ts and start <= ts < end:
                 buckets[i].append(item)
                 break
     return buckets
 
 
-# --------------------------------------------------------------------------- #
-# Session / lap construction
-# --------------------------------------------------------------------------- #
+def _before(ts: datetime | None, windows: list[tuple[datetime, datetime]]) -> bool:
+    return ts is not None and ts < windows[0][0]
 
 
-def _semicircle_deg(value: int | None) -> float | None:
-    if value is None:
-        return None
-    return value * SEMICIRCLE_TO_DEG
+# --- sessions and laps ------------------------------------------------------------------
 
 
-def _derive_speed(
-    distance_m: float | None, moving_s: float | None, elapsed_s: float | None
-) -> float | None:
-    """distance / time, never the FIT avg_speed field (unreliable per PLAN §3)."""
-    t = moving_s if moving_s else elapsed_s
-    if not t or distance_m is None:
-        return None
-    return distance_m / t
+def _deg(value: int | None) -> float | None:
+    return value * SEMICIRCLE_TO_DEG if value is not None else None
 
 
-def _cadence(d: dict[str, Any]) -> float | None:
-    """Running sessions/laps use `avg_running_cadence`, not `avg_cadence`."""
-    running = d.get("avg_running_cadence")
-    return running if running is not None else d.get("avg_cadence")
+def _int(value: float | None) -> int | None:
+    return round(value) if value is not None else None
 
 
-def _partial_flags(laps_raw: list[dict[str, Any]]) -> list[bool]:
-    """Flag the trailing remainder lap of an auto-lap sequence.
-
-    Only the last lap can be partial, and only when there's more than one lap (a
-    lone lap covering the whole segment — e.g. an Apple swim, a transition — is
-    whole, not a remainder). Garmin marks it via `lap_trigger == "session_end"`;
-    Apple's own trailing run lap is *not* tagged that way, so distance well under
-    the auto-lap length (established from the preceding laps) is the fallback.
-    """
-    n = len(laps_raw)
-    flags = [False] * n
-    if n < 2:
-        return flags
-    reference_dists = [d for lap in laps_raw[:-1] if (d := lap.get("total_distance")) is not None]
-    reference = statistics.median(reference_dists) if reference_dists else None
-    last = laps_raw[-1]
-    last_dist = last.get("total_distance")
-    is_session_end = last.get("lap_trigger") == "session_end"
-    is_short = reference is not None and last_dist is not None and last_dist < 0.9 * reference
-    flags[-1] = is_session_end or is_short
-    return flags
+def _cadence(d: dict[str, Any]) -> int | None:
+    return _int(d.get("avg_running_cadence") or d.get("avg_cadence"))
 
 
-def _build_laps(laps_raw: list[dict[str, Any]], segment: Segment) -> list[ParsedLap]:
-    flags = _partial_flags(laps_raw)
-    out: list[ParsedLap] = []
-    for i, lap in enumerate(laps_raw):
-        elapsed = lap.get("total_elapsed_time") or 0.0
-        moving = lap.get("total_timer_time")
-        distance = lap.get("total_distance")
-        out.append(
-            ParsedLap(
-                sport=segment,
-                lap_index=i,
-                start_time=lap["start_time"],
-                total_time=round(elapsed),
-                distance_m=distance,
-                avg_hr=lap.get("avg_heart_rate"),
-                max_hr=lap.get("max_heart_rate"),
-                avg_power=lap.get("avg_power"),
-                normalized_power=lap.get("normalized_power"),
-                avg_speed=_derive_speed(distance, moving, elapsed),
-                elevation_gain_m=lap.get("total_ascent"),
-                cadence_avg=_cadence(lap),
-                is_partial=flags[i],
-                raw_data=_json_safe(lap),
-            )
-        )
-    return out
-
-
-def _build_session(
-    segment: Segment,
-    sport: Sport,
+def _session(
+    segment: Segment | None,
     s: dict[str, Any],
-    laps_raw: list[dict[str, Any]],
-    records_raw: list[dict[str, Any]],
-    device_infos_raw: list[dict[str, Any]],
+    laps: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    device_infos: list[dict[str, Any]],
 ) -> ParsedSession:
     start = s["start_time"]
-    elapsed = s.get("total_elapsed_time") or 0.0
-    end = start + timedelta(seconds=elapsed)
-    moving = s.get("total_timer_time")
-    distance = s.get("total_distance") or 0.0
-
-    gps_track: list[dict[str, Any]] = []
-    for r in records_raw:
-        lat, lng = r.get("position_lat"), r.get("position_long")
-        if lat is None or lng is None:
-            continue
-        elevation = r.get("enhanced_altitude")
-        if elevation is None:
-            elevation = r.get("altitude")
-        gps_track.append(
-            {
-                "lat": _semicircle_deg(lat),
-                "lng": _semicircle_deg(lng),
-                "elevation": elevation,
-                "timestamp": r.get("timestamp"),
-            }
-        )
-
-    # nec/swc are nominally the north-east/south-west corners, but on at least one
-    # real fixture (an Apple open-water swim covering a small loop) the two ends of
-    # a lat/lng pair come back the "wrong" way round. Take min/max of the pair
-    # rather than trusting which field is which, so the box is always well-formed.
-    nec_lat = _semicircle_deg(s.get("nec_lat"))
-    nec_long = _semicircle_deg(s.get("nec_long"))
-    swc_lat = _semicircle_deg(s.get("swc_lat"))
-    swc_long = _semicircle_deg(s.get("swc_long"))
-    bounds_n = max(nec_lat, swc_lat) if nec_lat is not None and swc_lat is not None else nec_lat
-    bounds_s = min(nec_lat, swc_lat) if nec_lat is not None and swc_lat is not None else swc_lat
-    bounds_e = (
-        max(nec_long, swc_long) if nec_long is not None and swc_long is not None else nec_long
-    )
-    bounds_w = (
-        min(nec_long, swc_long) if nec_long is not None and swc_long is not None else swc_long
-    )
-    if gps_track and None in (bounds_n, bounds_s, bounds_e, bounds_w):
-        lats = [p["lat"] for p in gps_track]
-        lngs = [p["lng"] for p in gps_track]
-        bounds_n = bounds_n if bounds_n is not None else max(lats)
-        bounds_s = bounds_s if bounds_s is not None else min(lats)
-        bounds_e = bounds_e if bounds_e is not None else max(lngs)
-        bounds_w = bounds_w if bounds_w is not None else min(lngs)
-
-    device_keys = sorted(
-        {
-            f"{d.get('manufacturer') or 'unknown'}:{d['serial_number']}"
-            for d in device_infos_raw
-            if d.get("serial_number") is not None
-        }
-    )
-
-    rpe_raw = s.get("workout_rpe")
-    rpe_estimated = round(rpe_raw / 10, 1) if rpe_raw is not None else None
-    avg_mets = s.get("AVG METs")
-    if avg_mets is None:
-        avg_mets = s.get("avg_mets")
-
+    distance = s.get("total_distance")
+    track = _track(start, records)
+    rpe = s.get("RPE ESTIMATED")
+    if rpe is None and s.get("workout_rpe") is not None:
+        rpe = s["workout_rpe"] / 10
     return ParsedSession(
+        sport=_FIT_SPORT.get(s.get("sport") or "", Sport.OTHER)
+        if s.get("sport") != "transition"
+        else None,
         segment=segment,
-        sport=sport,
         start_time=start,
-        end_time=end,
-        elapsed_time=round(elapsed),
-        moving_time=round(moving) if moving is not None else None,
+        elapsed_time=round(s.get("total_elapsed_time") or 0),
+        moving_time=_int(s.get("total_timer_time")),
         distance_m=distance,
         elevation_gain_m=s.get("total_ascent"),
         avg_hr=s.get("avg_heart_rate"),
         max_hr=s.get("max_heart_rate"),
         avg_power=s.get("avg_power"),
         normalized_power=s.get("normalized_power"),
-        avg_speed=_derive_speed(distance, moving, elapsed),
         avg_cadence=_cadence(s),
         avg_temp_c=s.get("avg_temperature"),
-        rpe_estimated=rpe_estimated,
-        avg_mets=avg_mets,
-        bounds_n=bounds_n,
-        bounds_s=bounds_s,
-        bounds_e=bounds_e,
-        bounds_w=bounds_w,
-        gps_track=gps_track,
-        laps=_build_laps(laps_raw, segment),
-        device_keys=device_keys,
+        rpe_estimated=rpe,
+        bounds=_bounds(s, track),
+        gps_track=track,
+        progress_series=progress_series(track, s.get("total_elapsed_time") or 0, distance),
+        laps=_laps(laps),
+        devices=_devices(device_infos),
         raw_data=_json_safe(s),
     )
 
 
-def _dedup_devices(device_infos_raw: list[dict[str, Any]]) -> list[ParsedDevice]:
-    seen: dict[tuple[str | None, int], ParsedDevice] = {}
-    for d in device_infos_raw:
-        serial = d.get("serial_number")
-        if serial is None:
-            continue
-        key = (d.get("manufacturer"), serial)
-        if key not in seen:
-            seen[key] = ParsedDevice(
-                manufacturer=d.get("manufacturer"),
-                serial_number=serial,
-                product=d.get("product"),
-                label=d.get("product_name"),
-            )
-    return list(seen.values())
-
-
-# --------------------------------------------------------------------------- #
-# Local date resolution (§3: Race.date is the local date, not the UTC date)
-# --------------------------------------------------------------------------- #
-
-
-def _timezone_finder():
-    """Kept as a thin alias so this module's call sites read unchanged; the instance
-    itself is shared with weather enrichment (see `app.services.tz`)."""
-    return timezone_finder()
-
-
-def _resolve_local_date(
-    start_time: datetime,
-    records_raw: list[dict[str, Any]],
-    tcorr: dict[str, Any] | None,
-) -> tuple[date, int, str | None]:
-    """Prefer timestamp_correlation (Edge 540); else GPS position + timezonefinder;
-    else fall back to the UTC date with a warning."""
-    if tcorr is not None:
-        utc_ts = tcorr.get("timestamp")
-        local_ts = tcorr.get("local_timestamp")
-        if utc_ts is not None and local_ts is not None:
-            offset_s = round((local_ts - utc_ts).total_seconds())
-            local_dt = start_time + timedelta(seconds=offset_s)
-            return local_dt.date(), offset_s, None
-
-    for r in records_raw:
-        lat, lng = r.get("position_lat"), r.get("position_long")
+def _track(start: datetime, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[{lat, lng, elevation, t, distance_m}]; t is seconds since the session start and
+    distance_m the device's own odometer, made relative to the session start."""
+    points = []
+    first_distance = next((r["distance"] for r in records if r.get("distance") is not None), 0)
+    for r in records:
+        lat, lng = _deg(r.get("position_lat")), _deg(r.get("position_long"))
         if lat is None or lng is None:
             continue
-        tzname = _timezone_finder().timezone_at(lat=_semicircle_deg(lat), lng=_semicircle_deg(lng))
-        if not tzname:
-            break
-        local_dt = start_time.astimezone(ZoneInfo(tzname))
-        offset = local_dt.utcoffset()
-        offset_s = round(offset.total_seconds()) if offset else 0
-        return local_dt.date(), offset_s, None
-
-    return (
-        start_time.date(),
-        0,
-        "No GPS position or timestamp_correlation available; local_date falls back "
-        "to the UTC date.",
-    )
+        elevation = r.get("enhanced_altitude", r.get("altitude"))  # Trap 9
+        distance = r.get("distance")
+        points.append(
+            {
+                "lat": round(lat, 6),
+                "lng": round(lng, 6),
+                "elevation": round(elevation, 1) if elevation is not None else None,
+                "t": round((r["timestamp"] - start).total_seconds()),
+                "distance_m": round(distance - first_distance, 1) if distance is not None else None,
+            }
+        )
+    return points
 
 
-# --------------------------------------------------------------------------- #
-# JSON-safety for raw_data
-# --------------------------------------------------------------------------- #
+def progress_series(
+    track: list[dict[str, Any]], elapsed_s: float, distance_m: float | None
+) -> list[dict[str, Any]]:
+    """~200 points of {progress, elapsed_s, distance_m}, evenly spaced in progress.
+
+    Progress is the fraction of the segment's distance where the device measured one,
+    otherwise the fraction of its time. Comparison interpolates on this series, so the
+    browser never aligns two 9 000-point streams.
+    """
+    by_distance = bool(distance_m) and any(p["distance_m"] for p in track)
+    samples = [
+        (p["t"], p["distance_m"]) for p in track if not by_distance or p["distance_m"] is not None
+    ]
+    if not samples or not elapsed_s:
+        return []
+    samples = [(0.0, 0.0)] + samples + [(float(elapsed_s), distance_m or samples[-1][1])]
+    total = distance_m if by_distance else elapsed_s
+    axis = [(d if by_distance else t) or 0 for t, d in samples]
+    out = []
+    j = 0
+    for k in range(PROGRESS_POINTS + 1):
+        target = total * k / PROGRESS_POINTS
+        while j < len(samples) - 2 and axis[j + 1] < target:
+            j += 1
+        (t0, d0), (t1, d1) = samples[j], samples[j + 1]
+        a0, a1 = axis[j], axis[j + 1]
+        f = (target - a0) / (a1 - a0) if a1 > a0 else 0.0
+        f = min(max(f, 0.0), 1.0)
+        out.append(
+            {
+                "progress": round(k / PROGRESS_POINTS, 4),
+                "elapsed_s": round(t0 + f * (t1 - t0), 1),
+                "distance_m": round((d0 or 0) + f * ((d1 or 0) - (d0 or 0)), 1)
+                if by_distance
+                else None,
+            }
+        )
+    return out
+
+
+def _bounds(
+    s: dict[str, Any], track: list[dict[str, Any]]
+) -> tuple[float, float, float, float] | None:
+    """nec/swc from the session; the pair can come back swapped, so take min/max."""
+    lats = [v for v in (_deg(s.get("nec_lat")), _deg(s.get("swc_lat"))) if v is not None]
+    lngs = [v for v in (_deg(s.get("nec_long")), _deg(s.get("swc_long"))) if v is not None]
+    if len(lats) < 2 or len(lngs) < 2:
+        if not track:
+            return None
+        lats = [p["lat"] for p in track]
+        lngs = [p["lng"] for p in track]
+    return max(lats), min(lats), max(lngs), min(lngs)
+
+
+def _laps(laps: list[dict[str, Any]]) -> list[ParsedLap]:
+    """Laps carry pacing shape only; segment totals come from the session (Trap 1)."""
+    partial = _partial_flags(laps)
+    return [
+        ParsedLap(
+            lap_index=i,
+            start_time=lap["start_time"],
+            total_time=round(lap.get("total_elapsed_time") or 0),
+            distance_m=lap.get("total_distance"),
+            elevation_gain_m=lap.get("total_ascent"),
+            avg_hr=lap.get("avg_heart_rate"),
+            max_hr=lap.get("max_heart_rate"),
+            avg_power=lap.get("avg_power"),
+            normalized_power=lap.get("normalized_power"),
+            cadence_avg=_cadence(lap),
+            is_partial=partial[i],
+            raw_data=_json_safe(lap),
+        )
+        for i, lap in enumerate(laps)
+    ]
+
+
+def _partial_flags(laps: list[dict[str, Any]]) -> list[bool]:
+    """Only the last of several laps can be a remainder. Garmin tags it `session_end`;
+    Apple doesn't, so a last lap well short of the auto-lap length also counts."""
+    flags = [False] * len(laps)
+    if len(laps) < 2:
+        return flags
+    earlier = [d for lap in laps[:-1] if (d := lap.get("total_distance")) is not None]
+    last = laps[-1]
+    short = bool(earlier) and (last.get("total_distance") or 0) < 0.9 * statistics.median(earlier)
+    flags[-1] = last.get("lap_trigger") == "session_end" or short
+    return flags
+
+
+def _devices(device_infos: list[dict[str, Any]]) -> list[ParsedDevice]:
+    """Paired sensors with a serial. The `creator` entry is the recording device itself,
+    which is `ParsedFile.device_key`, not a sensor."""
+    seen: dict[str, ParsedDevice] = {}
+    for d in device_infos:
+        if d.get("serial_number") is None or d.get("device_index") == "creator":
+            continue
+        device = ParsedDevice(
+            manufacturer=str(d.get("manufacturer") or "unknown"),
+            serial_number=str(d["serial_number"]),
+            label=d.get("product_name"),
+        )
+        seen.setdefault(device.key, device)
+    return sorted(seen.values(), key=lambda d: d.key)
+
+
+# --- local date (Trap 11) ---------------------------------------------------------------
+
+
+def _local_date(
+    start: datetime, records: list[dict[str, Any]], tcorr: dict[str, Any] | None
+) -> tuple[date, str | None]:
+    """timestamp_correlation first, then the first GPS fix's timezone, then UTC."""
+    if tcorr and tcorr.get("timestamp") and tcorr.get("local_timestamp"):
+        offset = tcorr["local_timestamp"] - tcorr["timestamp"]
+        if isinstance(offset, timedelta):
+            return (start + offset).date(), None
+    for r in records:
+        lat, lng = _deg(r.get("position_lat")), _deg(r.get("position_long"))
+        if lat is None or lng is None:
+            continue
+        zone = timezone_at(lat, lng)
+        if zone:
+            return start.astimezone(ZoneInfo(zone)).date(), None
+        break
+    return start.date(), "No position or timezone in the file; the race date is the UTC date."
 
 
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_json_safe(v) for v in value]
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, timedelta):
         return value.total_seconds()
     if isinstance(value, bytes):
-        return list(value)
+        return value.hex()
+    if isinstance(value, float) and value != value:  # NaN is not valid JSON
+        return None
     return value

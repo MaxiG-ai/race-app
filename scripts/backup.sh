@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nightly backup for race-app (PLAN.md §8): a `pg_dump` (custom format, so
+# Nightly backup for race-app (docs/operations/deployment.md#backups): a `pg_dump` (custom format, so
 # it's restorable with `pg_restore` and independent of server version quirks)
 # plus a mirror of the retained original FIT uploads. Both land under
 # $BACKUP_DIR on the host — that's deliberate: it puts them in an ordinary
@@ -19,8 +19,8 @@
 # Cron (nightly at 03:15, from the deploy directory):
 #   15 3 * * * cd /opt/race-app && ./scripts/backup.sh >> /var/log/race-app-backup.log 2>&1
 #
-# Config (env, all optional — defaults match docker-compose.prod.yml):
-#   COMPOSE_FILE      compose file to target        (docker-compose.prod.yml)
+# Config (env, all optional — defaults match docker-compose.yml):
+#   COMPOSE_FILE      compose file to target        (docker-compose.yml)
 #   COMPOSE_PROJECT   compose -p project name        (compose default: dir name)
 #   BACKUP_DIR        host directory to back up into (/opt/race-app/backups)
 #   RETENTION_DAYS    days of db dumps to keep        (14)
@@ -31,7 +31,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-}"
 BACKUP_DIR="${BACKUP_DIR:-/opt/race-app/backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"

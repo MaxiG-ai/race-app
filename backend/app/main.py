@@ -1,60 +1,54 @@
+"""App factory: /api, /static and the page shells from one process."""
+
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
+from app import pages
+from app.config import get_settings
 from app.routers import (
-    activities as activities_router,
-)
-from app.routers import (
-    auth as auth_router,
-)
-from app.routers import (
-    categories as categories_router,
-)
-from app.routers import (
-    gear as gear_router,
-)
-from app.routers import (
-    grouping as grouping_router,
-)
-from app.routers import (
-    races as races_router,
-)
-from app.routers import (
-    stats as stats_router,
-)
-from app.routers import (
-    uploads as uploads_router,
+    access,
+    classification,
+    comparison,
+    fueling,
+    gear,
+    imports,
+    races,
+    timeline,
+    weather,
 )
 
-app = FastAPI(title="Triathlon Racing History", version="0.1.0")
+# Every router is built by an access factory (app.access); none is mounted bare.
+ROUTERS = [
+    access.anyone,
+    access.read,
+    access.write,
+    timeline.read,
+    races.read,
+    races.write,
+    imports.write,
+    classification.read,
+    classification.write,
+    comparison.read,
+    weather.write,
+    fueling.write,
+    gear.write,
+]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="race-app", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    for router in ROUTERS:
+        app.include_router(router)
+
+    @app.get("/health", include_in_schema=False)
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    app.include_router(pages.router)
+    static = get_settings().frontend_dir / "static"
+    static.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=static), name="static")
+    return app
 
 
-@app.get("/health", tags=["meta"])
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-# Every data router carries the `current_user` dependency at router level (§4 Auth),
-# so a new endpoint is authenticated by default rather than by remembering to add it.
-# `auth` is the deliberate exception — see app/routers/__init__.py and routers/auth.py.
-app.include_router(auth_router.router, prefix="/api")
-
-# Order matters: `grouping` owns the literal /races/group path, and must be registered
-# before `races`, whose /races/{race_id} would otherwise capture "group" as an id and
-# fail on int parsing.
-app.include_router(categories_router.router, prefix="/api")
-app.include_router(grouping_router.router, prefix="/api")
-app.include_router(races_router.router, prefix="/api")
-app.include_router(uploads_router.router, prefix="/api")
-app.include_router(activities_router.router, prefix="/api")
-app.include_router(gear_router.router, prefix="/api")
-app.include_router(stats_router.router, prefix="/api")
+app = create_app()

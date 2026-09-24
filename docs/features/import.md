@@ -102,9 +102,11 @@ parsed, and the grouping tray below it.
 ### Import flow (multisport)
 
 1. Parse `session`, `lap`, `record` and `device_info` in one pass with `fitdecode`.
-2. Map the 5 sessions to `swim, t1, bike, t2, run` by order and sport field. Check the
-   sequence instead of trusting it; a file that doesn't match is rejected with a clear
-   error and nothing is written.
+2. Map the sessions to `swim, t1, bike, t2, run` by order and sport field. Check the
+   sequence instead of trusting it: swim, bike, run in that order, each transition
+   present or missing. A file that doesn't match is rejected with a clear error and
+   nothing is written. A missing transition is derived from the gap, exactly like a
+   [grouped race's](grouping.md#derived-transitions).
 3. Bucket `record`s into sessions with half-open, clamped windows
    ([Trap 3](../reference/fit-files.md#trap-3)). Orphans are dropped and counted
    ([Trap 4](../reference/fit-files.md#trap-4)); the count is kept in `summary`.
@@ -146,3 +148,4 @@ Against the synthetic fixtures ([fit-files](../reference/fit-files.md#testing-wi
 - The early-start fixture gets the local date, not the UTC date (Trap 11).
 - Uploading the same file twice gives one `upload` row and a "duplicate" result.
 - A file with the wrong session sequence writes nothing.
+- A file without a recorded T2 (`missing_t2.fit`) gets a derived T2 from the gap.

@@ -20,12 +20,12 @@ docker compose exec app python -m app.cli create-owner
 ```
 
 The app container runs migrations before it starts serving, so a checkout can't drift
-from its schema. For development, the source is bind-mounted with auto-reload.
+from its schema. For development, `docker-compose.dev.yml` bind-mounts the source with auto-reload.
 
 ## Public
 
 ```bash
-cp .env.example .env    # DOMAIN, ACME_EMAIL, SITE_MODE=public, POSTGRES_*, SECRET
+cp .env.example .env    # DOMAIN, ACME_EMAIL, SITE_MODE=public, POSTGRES_*
 docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
 docker compose exec app python -m app.cli create-owner
 ```
@@ -49,9 +49,11 @@ Twelve-factor: everything comes from env vars, and `.env.example` documents each
 | Var | Purpose |
 |---|---|
 | `SITE_MODE` | `private` \| `public`, see [access](../features/access-and-visibility.md) |
-| `DATABASE_URL` | points at the `db` service host |
-| `SECRET` | random secret; used to sign anything that needs signing |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | read by the `db` service and by the app, which builds its database URL from them (`POSTGRES_HOST`, default `localhost`, is set to `db` by compose) |
+| `DATABASE_URL` | optional; used as is instead of the `POSTGRES_*` values |
+| `APP_PORT` | host port binding for local/self-hosted runs, default `127.0.0.1:8000` |
 | `UPLOAD_DIR` | where original FIT files are kept (a mounted volume) |
+| `MAX_UPLOAD_BYTES` | per-file upload limit, default 20 MB |
 | `OPEN_METEO_BASE_URL` | weather API base |
 | `DOMAIN`, `ACME_EMAIL` | public mode only |
 
@@ -81,3 +83,14 @@ A race history has no other source once the watch data ages out, so back it up.
 
 `git pull && docker compose ... up -d --build`. No CI/CD is needed to deploy. CI for tests
 and lint on pull requests is worth adding once the repository is public.
+
+### Coming from v1
+
+The rewrite starts a fresh migration history (`0001_initial_schema`) and doesn't migrate v1
+data: v1 was multi-tenant and its schema doesn't map onto the single-owner one. A v1
+database stops the app at startup with Alembic's "Can't locate revision" error; nothing is
+changed or lost. To move over:
+
+1. Back up (`scripts/backup.sh`), and keep your original FIT files.
+2. `docker compose down -v` removes the old database and uploads volumes.
+3. `docker compose up -d --build`, `create-owner`, then re-upload the FIT files.

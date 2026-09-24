@@ -23,8 +23,11 @@ The vendor split matters more than any single file's quirks.
 
 ## What holds across both vendors
 
-- **One multisport FIT = one race**, with 5 `session` messages in order: swim
-  (open_water), transition (T1), cycling, transition (T2), running. The `record` stream is
+- **One multisport FIT = one race**, normally with 5 `session` messages in order: swim
+  (open_water), transition (T1), cycling, transition (T2), running. **A transition can be
+  missing:** an Apple Watch that went straight from the bike to the run recorded only four
+  sessions (no T2), leaving a 2½-minute gap between the bike's end and the run's start.
+  On Strava that race shows no second "Workout" activity. The `record` stream is
   split by session boundaries; the importer does not expect 5 separate uploads.
 - **`record`** messages carry the position stream (99.8–100 % GPS coverage, including the
   open-water swim).
@@ -182,6 +185,7 @@ and has one job:
 | `overlap_boundary.fit` | sub-second session overlap (3) |
 | `edge_single_bike.fit` | single cycling session; `device_info` with made-up sensor serials; `timestamp_correlation` (11) |
 | `early_start_local_date.fit` | UTC date ≠ local date (11) |
+| `missing_t2.fit` | four sessions, no recorded T2 |
 
 Real recordings stay useful as a second line of defence: drop your own files into
 `backend/tests/fixtures/private/` (gitignored). The real-file suite runs when files are

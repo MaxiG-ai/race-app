@@ -1,0 +1,28 @@
+/* Design tokens (docs/design/visual-system.md). The only file with raw colour values.
+   Sport colours were checked for legibility; re-run the check if any value changes. */
+:root {
+  --bg: #FAFAF8;
+  --surface: #FFFFFF;
+  --ink: #1C2321;
+  --ink-muted: #5E6562;
+  --hairline: #E4E1D8;
+
+  --swim: #008C7E;
+  --bike: #A8862A;
+  --run: #B4472A;
+  --transition: #C9C5BA;
+
+  --faster: #008C7E;
+  --slower: #B4472A;
+  --neutral: #6B6B66;
+
+  --focus: #1C2321;
+  --danger: #B4472A;
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --text-sm: 0.875rem;
+  --text-xs: 0.75rem;
+  --radius: 6px;
+  --gutter: 16px;
+  --measure: 46rem;
+}

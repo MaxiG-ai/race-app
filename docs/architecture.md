@@ -56,7 +56,7 @@ are fiddly to write by hand.
 
 | Package | Why |
 |---|---|
-| FastAPI + uvicorn | HTTP framework; router-level dependencies are how owner-only writes are enforced ([access](features/access-and-visibility.md#enforcement-lives-in-two-places)); `/docs` for free |
+| FastAPI + uvicorn | HTTP framework; router-level dependencies are how owner-only writes are enforced ([access](features/access-and-visibility.md#enforcement-lives-in-two-places)); `/api/docs` for free |
 | Pydantic v2 | request/response models; `exclude_unset` gives the "field left out vs explicit null" distinction partial writes need; separate public and owner response shapes |
 | SQLAlchemy 2.0 | ORM, `Mapped[...]` / `mapped_column` style, `DeclarativeBase` |
 | Alembic | migrations; run on startup |
@@ -64,6 +64,8 @@ are fiddly to write by hand.
 | `fitdecode` | FIT parsing; handles Garmin's undecoded proprietary messages without errors ([fit-files](reference/fit-files.md#library)) |
 | `argon2-cffi` | password hashing for the owner login |
 | `pydantic-settings` | env-driven config |
+| `python-multipart` | FastAPI needs it to accept multipart FIT uploads |
+| `timezonefinder` | coordinate → timezone, offline, for the local race date ([Trap 11](reference/fit-files.md#trap-11)) and the weather hour. A lookup service would make every import depend on the network |
 
 Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
 `secrets` + a `session` table instead of a JWT library, `hashlib` for content hashes,
@@ -88,7 +90,8 @@ race-app/
       schemas/          Pydantic models; owner and public shapes side by side
       routers/          one module per feature; read and owner-only write routers
       pages.py          page shells with <title> / Open Graph tags
-      services/         fit_import, grouping, gear, weather, classify, comparison, geo
+      services/         fit_import (bytes → dataclasses), imports (uploads, grouping,
+                        primaries), results, classify, gear, weather, comparison, geo
       migrations/       Alembic
       cli.py            create-owner, set-password, reimport
     tests/
@@ -99,13 +102,15 @@ race-app/
     race.html           race detail         served at /races/{id}
     compare.html        comparison          served at /compare?a=&b=
     login.html
-    admin/              import, edit, gear — owner only, plain static files
+    admin/              import, race-edit, gear, site — owner only, served at /admin/<name>
     static/
       css/              tokens.css, base.css, one file per page
       js/               api.js, format.js, charts.js, one module per page
       vendor/leaflet/, vendor/chartjs/
   docs/
+  Dockerfile            one image: backend + frontend
   docker-compose.yml    app + db, local and self-hosted
+  docker-compose.public.yml, docker-compose.dev.yml   Caddy in front; bind-mounted source
   Caddyfile             only for the public deployment
 ```
 

@@ -1,12 +1,7 @@
-"""`python -m app.cli` — account management.
+"""Owner account and maintenance: `uv run python -m app.cli <command>`.
 
-Registration is deliberately not open in v1 (§2): this CLI is the only path to
-creating or resetting an account. Passwords are always prompted for
-interactively (never taken as an argv value), so they never land in shell
-history or a process listing.
+There is no registration and no reset email; this CLI is the reset flow.
 """
-
-from __future__ import annotations
 
 import argparse
 import getpass
@@ -14,83 +9,72 @@ import sys
 
 from sqlalchemy import select
 
-from app.auth.password import hash_password
-from app.db import SessionLocal
-from app.models import User
-
-_MIN_PASSWORD_LEN = 8
-
-
-def _prompt_password(prompt: str = "Password: ") -> str:
-    while True:
-        password = getpass.getpass(prompt)
-        if len(password) < _MIN_PASSWORD_LEN:
-            print(f"Password must be at least {_MIN_PASSWORD_LEN} characters.", file=sys.stderr)
-            continue
-        confirm = getpass.getpass("Confirm password: ")
-        if password != confirm:
-            print("Passwords did not match. Try again.", file=sys.stderr)
-            continue
-        return password
+from app.access import hash_password
+from app.db import _session_factory
+from app.models import Owner, OwnerSession, Upload
+from app.services import imports
+from app.services.fit_import import FitParseError
 
 
-def create_user(args: argparse.Namespace) -> None:
-    password = _prompt_password()
-    with SessionLocal() as db:
-        existing = db.execute(select(User).where(User.email == args.email)).scalar_one_or_none()
-        if existing is not None:
-            print(f"A user with email {args.email!r} already exists.", file=sys.stderr)
-            raise SystemExit(1)
+def _password(given: str | None) -> str:
+    if given:
+        return given
+    first = getpass.getpass("Password: ")
+    if len(first) < 8:
+        sys.exit("Use at least 8 characters.")
+    if getpass.getpass("Again: ") != first:
+        sys.exit("The passwords don't match.")
+    return first
 
-        user = User(
-            email=args.email,
-            password_hash=hash_password(password),
-            display_name=args.display_name,
-        )
-        db.add(user)
+
+def create_owner(username: str, password: str | None) -> None:
+    with _session_factory()() as db:
+        if db.scalar(select(Owner)):
+            sys.exit("An owner already exists; use set-password to change the password.")
+        db.add(Owner(username=username, password_hash=hash_password(_password(password))))
         db.commit()
-        print(f"Created user {args.email!r} (id={user.id}).")
+    print(f"Created owner {username}.")
 
 
-def reset_password(args: argparse.Namespace) -> None:
-    password = _prompt_password("New password: ")
-    with SessionLocal() as db:
-        user = db.execute(select(User).where(User.email == args.email)).scalar_one_or_none()
-        if user is None:
-            print(f"No user with email {args.email!r}.", file=sys.stderr)
-            raise SystemExit(1)
-
-        user.password_hash = hash_password(password)
+def set_password(password: str | None) -> None:
+    with _session_factory()() as db:
+        owner = db.scalar(select(Owner))
+        if owner is None:
+            sys.exit("No owner yet; run create-owner first.")
+        owner.password_hash = hash_password(_password(password))
+        db.query(OwnerSession).delete()  # log out everywhere
         db.commit()
-        print(f"Password reset for {args.email!r}.")
+    print("Password changed; all sessions were logged out.")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="python -m app.cli",
-        description=(
-            "Account management. Registration is not open (§2) — this is the "
-            "only way to create or reset an account."
-        ),
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    create = subparsers.add_parser("create-user", help="Create a new user account.")
-    create.add_argument("--email", required=True, help="Login email.")
-    create.add_argument("--display-name", default=None, help="Optional display name.")
-    create.set_defaults(func=create_user)
-
-    reset = subparsers.add_parser("reset-password", help="Reset an existing user's password.")
-    reset.add_argument("--email", required=True, help="Account email.")
-    reset.set_defaults(func=reset_password)
-
-    return parser
+def reimport() -> None:
+    """Re-parse every stored original with the current parser."""
+    with _session_factory()() as db:
+        for upload in db.scalars(select(Upload).order_by(Upload.id)).all():
+            try:
+                imports.reimport(db, upload)
+                print(f"upload {upload.id} ({upload.filename}): updated")
+            except (FitParseError, imports.GroupingError) as exc:
+                db.rollback()
+                print(f"upload {upload.id} ({upload.filename}): failed: {exc}")
 
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-    args.func(args)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="python -m app.cli")
+    commands = parser.add_subparsers(dest="command", required=True)
+    create = commands.add_parser("create-owner")
+    create.add_argument("--username", default="owner")
+    create.add_argument("--password", help="omit to be prompted")
+    change = commands.add_parser("set-password")
+    change.add_argument("--password", help="omit to be prompted")
+    commands.add_parser("reimport")
+    args = parser.parse_args(argv)
+    if args.command == "create-owner":
+        create_owner(args.username, args.password)
+    elif args.command == "set-password":
+        set_password(args.password)
+    else:
+        reimport()
 
 
 if __name__ == "__main__":

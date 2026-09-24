@@ -69,6 +69,6 @@ Decisions for the rewrite, newest last. Feature files hold the detail.
 | Link previews | server-filled `<title>` + Open Graph tags on public pages | — |
 | Charts | Chart.js, vendored | Recharts |
 | Test fixtures | synthetic FIT files written with `fit-tool` (dev-only); real files only locally, gitignored | real unanonymized files committed, repo kept private |
-| Publishing | repository goes public after the rewrite, from clean history | repo must stay private |
+| Publishing | repository goes public after the rewrite; its history (with the v1 recordings) is kept as is | repo must stay private |
 | Classification | inferred from measured distances; manual override kept alongside | same |
 | Fueling, gear, weather, comparison | kept | same |

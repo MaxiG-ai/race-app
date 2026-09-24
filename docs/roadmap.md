@@ -5,42 +5,42 @@ feature files hold the detail; this page only sequences them.
 
 ## Phase 0 — a publishable starting point
 
-- [ ] Synthetic FIT fixtures + the `fit-tool` generator script
+- [x] Synthetic FIT fixtures + the `fit-tool` generator script
       ([fit-files](reference/fit-files.md#testing-without-the-originals)).
-- [ ] Move the real recordings out of the repository into your own
+- [x] Move the real recordings out of the repository into your own
       `tests/fixtures/private/` (gitignored).
-- [ ] **Clean history.** Deleting the fixtures in a later commit isn't enough: the real
-      files, and v1's `PLAN.md` with sensor serials, stay in git history. Start the public
-      repository from a fresh root commit (or an orphan branch) rather than publishing
-      this history.
-- [ ] `LICENSE` check, `README` for self-hosters.
+- [x] ~~Clean history.~~ Dropped: the real recordings and v1's `PLAN.md` stay in git
+      history, and the owner is fine publishing them. Only the working tree has to be
+      free of real recordings.
+- [x] `LICENSE` check, `README` for self-hosters.
 
 ## Phase 1 — foundation (core)
 
-- [ ] SQLAlchemy models + initial Alembic migration; the tables from [data-model](data-model.md).
-- [ ] [access-and-visibility](features/access-and-visibility.md): owner CLI, sessions,
+- [x] SQLAlchemy models + initial Alembic migration; the tables from [data-model](data-model.md).
+- [x] [access-and-visibility](features/access-and-visibility.md): owner CLI, sessions,
       `SITE_MODE`, the write-router guard, `visible_races`, and the enumerating access tests.
-- [ ] App serves `/static` and `/api` from one process; `docker compose up` works
+- [x] App serves `/static` and `/api` from one process; `docker compose up` works
       ([deployment](operations/deployment.md#local)).
-- [ ] Frontend skeleton: `tokens.css`, `api.js`, `format.js`, `charts.js` defaults,
+- [x] Frontend skeleton: `tokens.css`, `api.js`, `format.js`, `charts.js` defaults,
       vendored Leaflet and Chart.js, the login page, the owner bar.
-- [ ] Page shells with Open Graph tags ([architecture](architecture.md#link-previews)),
+- [x] Page shells with Open Graph tags ([architecture](architecture.md#link-previews)),
       visibility-aware from the start.
 
 **Done when** a private instance starts from scratch with one command and you can log in.
 
 ## Phase 2 — getting data in (core)
 
-- [ ] [import](features/import.md): parser against every synthetic fixture, the traps
+- [x] [import](features/import.md): parser against every synthetic fixture, the traps
       asserted, originals stored, `cli reimport`.
-- [ ] [grouping](features/grouping.md): tray, proposals, derived transitions, primary switch.
-- [ ] Check against your private real files.
+- [x] [grouping](features/grouping.md): tray, proposals, derived transitions, primary switch.
+- [x] Check against your private real files (the parser reproduces every figure in
+      fit-files.md on the five v1 recordings).
 
 ## Phase 3 — looking at races (core)
 
-- [ ] [timeline](features/timeline.md): spine, cards, segment bar, stat strip.
-- [ ] [race-detail](features/race-detail.md): splits table, Leaflet map, pacing chart.
-- [ ] [races-and-results](features/races-and-results.md): edit page, autosave, official
+- [x] [timeline](features/timeline.md): spine, cards, segment bar, stat strip.
+- [x] [race-detail](features/race-detail.md): splits table, Leaflet map, pacing chart.
+- [x] [races-and-results](features/races-and-results.md): edit page, autosave, official
       total derivation, completeness.
 
 **Done when** a public instance can be deployed and a visitor can browse published races.
@@ -48,14 +48,14 @@ That's the first release worth putting on a domain.
 
 ## Phase 4 — the rest of the race (next)
 
-- [ ] [classification](features/classification.md)
-- [ ] [weather](features/weather.md)
-- [ ] [fueling](features/fueling.md)
-- [ ] [gear](features/gear.md)
+- [x] [classification](features/classification.md)
+- [x] [weather](features/weather.md)
+- [x] [fueling](features/fueling.md)
+- [x] [gear](features/gear.md)
 
 ## Phase 5 — analysis (later)
 
-- [ ] [comparison](features/comparison.md): `progress_series`, alignment, gap chart, diffs.
+- [x] [comparison](features/comparison.md): `progress_series`, alignment, gap chart, diffs.
 
 ## After that
 

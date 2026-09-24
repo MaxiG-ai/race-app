@@ -1,0 +1,25 @@
+# Public site on your own domain: Caddy in front for TLS, nothing else.
+#   docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
+services:
+  app:
+    ports: !reset []  # reachable only from Caddy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

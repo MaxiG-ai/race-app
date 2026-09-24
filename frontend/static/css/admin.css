@@ -1,0 +1,94 @@
+/* Shared styles for the three owner-only admin pages (import, race-edit, gear).
+   Colours only via tokens.css. */
+
+.page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem;
+  flex-wrap: wrap; }
+
+/* --- Import: drop zone and result lines -------------------------------------------- */
+.dropzone {
+  border: 2px dashed var(--hairline); border-radius: var(--radius); padding: 2rem 1rem;
+  text-align: center; color: var(--ink-muted); cursor: pointer; background: var(--surface);
+}
+.dropzone.drag { border-color: var(--focus); color: var(--ink); }
+.dropzone input[type="file"] { display: none; }
+
+.result-list { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex;
+  flex-direction: column; gap: 0.25rem; }
+.result-line { font-size: var(--text-sm); }
+.result-line.failed, .result-line.duplicate { color: var(--ink-muted); }
+
+/* --- Import: grouping tray ----------------------------------------------------------- */
+.proposal {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  flex-wrap: wrap; border: 1px solid var(--swim); background: var(--surface);
+  border-radius: var(--radius); padding: 0.5rem 0.75rem; margin-bottom: 0.5rem;
+}
+.tray-row.selected td { background: var(--bg); }
+.segment-pick { display: flex; align-items: center; gap: 0.375rem; font-size: var(--text-xs); }
+.segment-pick select { width: auto; padding: 0.125rem 0.375rem; }
+.tray-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+  margin-top: 0.75rem; }
+.attach-panel { margin-top: 0.5rem; display: flex; gap: 0.5rem; align-items: center;
+  flex-wrap: wrap; }
+.attach-panel select { width: auto; }
+
+/* --- Race edit: sections -------------------------------------------------------------- */
+.section { margin-top: 2rem; }
+.section > h2 { margin-bottom: 0.5rem; }
+.field-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.field-row label { margin: 0; white-space: nowrap; }
+.field-row input, .field-row select { width: auto; flex: 1 1 8rem; min-width: 6rem; }
+.field-status { font-size: var(--text-xs); min-height: 1.2em; color: var(--ink-muted); }
+.field-status.ok { color: var(--faster); }
+.field-status.err { color: var(--danger); }
+
+.split-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.25rem 0.75rem; margin-bottom: 0.5rem; }
+.split-field label { font-size: var(--text-xs); }
+.split-field input[disabled] { color: var(--ink-muted); background: var(--bg); }
+.split-note { font-size: var(--text-xs); color: var(--ink-muted); }
+.result-summary { font-size: var(--text-sm); margin: 0.25rem 0 0.75rem; }
+.result-summary.err { color: var(--danger); }
+
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+  gap: 0.25rem; font-size: var(--text-sm); }
+.checklist li { display: flex; gap: 0.4rem; align-items: baseline; }
+.checklist .mark { width: 1rem; flex: none; color: var(--ink-muted); }
+.checklist li.done .mark { color: var(--faster); }
+.checklist .detail { color: var(--ink-muted); font-size: var(--text-xs); }
+
+.danger-zone { border: 1px solid var(--danger); border-radius: var(--radius);
+  padding: 0.75rem 1rem; margin-top: 2.5rem; }
+.danger-zone h2 { color: var(--danger); }
+.danger-zone button { border-color: var(--danger); color: var(--danger); }
+
+.fueling-segment { border: 1px solid var(--hairline); border-radius: var(--radius);
+  padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; }
+.product-row { display: flex; gap: 0.5rem; margin-bottom: 0.375rem; align-items: center; }
+.product-row input[type="text"] { flex: 2; }
+.product-row input[type="number"] { flex: 1; width: 5rem; }
+
+.gear-picker { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.5rem; }
+.gear-picker .options { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: var(--text-sm); }
+.gear-picker label { display: flex; align-items: center; gap: 0.3rem; font-size: var(--text-sm);
+  color: var(--ink); }
+.suggestion { font-size: var(--text-xs); color: var(--ink-muted); }
+
+.recording-switch { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm);
+  margin-bottom: 0.375rem; }
+
+/* --- Gear page ------------------------------------------------------------------------ */
+.gear-row {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.5rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.gear-row .name { flex: 1 1 10rem; min-width: 8rem; }
+.gear-row.retired { color: var(--ink-muted); }
+.unknown-device { border: 1px solid var(--hairline); border-radius: var(--radius);
+  padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;
+  align-items: center; }
+.unknown-device .meta { flex: 1 1 12rem; font-size: var(--text-sm); }
+
+/* A checkbox sits right before its label text. */
+label.field-row { display: flex; align-items: center; gap: 0.5rem; justify-content: flex-start; }
+label.field-row input[type=checkbox] { flex: none; min-width: 0; }

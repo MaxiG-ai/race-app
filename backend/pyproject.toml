@@ -1,31 +1,31 @@
 [project]
-name = "race-app-backend"
-version = "0.1.0"
+name = "race-app"
+version = "2.0.0"
 requires-python = ">=3.12"
+# Every runtime package is justified in docs/architecture.md#dependency-policy.
 dependencies = [
-    "alembic>=1.19.1",
-    "argon2-cffi>=25.1.0",
-    "email-validator>=2.3.0",
+    "alembic>=1.19",
+    "argon2-cffi>=25.1",
     "fastapi>=0.115",
-    "fitdecode>=0.11.0",
-    "gunicorn>=26.0.0",
-    "httpx>=0.28.1",
-    "psycopg[binary]>=3.3.4",
-    "pydantic-settings>=2.15.0",
-    "pyjwt>=2.13.0",
-    "python-multipart>=0.0.32",
+    "fitdecode>=0.11",
+    "psycopg[binary]>=3.3",
+    "pydantic-settings>=2.15",
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.0",
-    "timezonefinder>=8.2.5",
-    "uvicorn[standard]>=0.52.3",
+    "timezonefinder>=8.2",
+    "uvicorn>=0.35",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
-    "pytest>=9.1.1",
-    "pytest-cov>=7.1.0",
-    "ruff>=0.16.3",
+    "fit-tool>=0.9",
+    "httpx>=0.28",
+    "pytest>=9.0",
+    "ruff>=0.16",
 ]
+
+[tool.uv]
+package = false
 
 [tool.ruff]
 line-length = 100
@@ -34,12 +34,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
-[tool.ruff.lint.per-file-ignores]
-# CLAUDE.md/PLAN.md call for `str, enum.Enum` (not `enum.StrEnum`) so members
-# serialise as plain strings through both SQLAlchemy and Pydantic v2.
-"app/models/enums.py" = ["UP042"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-filterwarnings = ["error::DeprecationWarning:app.*"]
+# starlette nudges towards httpx2; httpx is what FastAPI's TestClient documents today
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
