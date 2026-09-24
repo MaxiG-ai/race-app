@@ -106,6 +106,7 @@ class RaceDetailPublic(BaseModel):
     location_lat: float | None
     location_lng: float | None
     notes: str | None
+    notes_html: str | None  # the race report, rendered from the Markdown subset
     is_public: bool
     category: CategoryRef | None
     weather: Weather

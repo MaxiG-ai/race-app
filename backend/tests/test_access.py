@@ -125,6 +125,7 @@ def test_public_detail_has_exactly_the_public_keys(anon, db, public_mode):
             "location_lat",
             "location_lng",
             "notes",
+            "notes_html",
             "is_public",
             "category",
             "weather",

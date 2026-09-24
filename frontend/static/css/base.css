@@ -86,3 +86,13 @@ details summary { cursor: pointer; font-size: var(--text-sm); color: var(--ink-m
 .chart { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 220px; }
 .map { width: 100%; aspect-ratio: 4 / 3; max-height: 60vh; border-radius: var(--radius);
   border: 1px solid var(--hairline); }
+
+/* Race reports: the output of the backend's Markdown subset (services/markdown.py) */
+.prose { max-width: 40rem; overflow-wrap: anywhere; }
+.prose h3, .prose h4, .prose h5 { margin: 1.25rem 0 0.5rem; }
+.prose h5 { font-size: var(--text-sm); }
+.prose ul, .prose ol { margin: 0 0 0.75rem; padding-left: 1.25rem; }
+.prose blockquote { margin: 0 0 0.75rem; padding-left: 0.75rem; border-left: 3px solid var(--hairline);
+  color: var(--ink-muted); }
+.prose code { font-size: 0.9em; background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 3px; padding: 0 0.25rem; }

@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app import pages
+from app import feed, pages
 from app.config import get_settings
 from app.routers import (
     access,
@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(pages.router)
+    app.include_router(feed.router)
     static = get_settings().frontend_dir / "static"
     static.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=static), name="static")

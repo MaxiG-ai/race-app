@@ -336,9 +336,11 @@ function renderConditions() {
 
 function renderNotes() {
   const r = /** @type {import("./types.js").RaceDetail} */ (race);
+  // notes_html is built by the backend's Markdown subset from escaped text only
+  // (services/markdown.py), so it is safe to insert as markup.
   document.getElementById("race-notes").innerHTML = `
-    <h2>Notes</h2>
-    <p class="notes-text">${r.notes ? esc(r.notes) : DASH}</p>
+    <h2>Race report</h2>
+    ${r.notes_html ? `<div class="prose">${r.notes_html}</div>` : `<p class="muted">${DASH}</p>`}
   `;
 }
 

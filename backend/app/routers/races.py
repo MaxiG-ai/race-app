@@ -25,7 +25,7 @@ from app.schemas.races import (
     TrackSegment,
     Weather,
 )
-from app.services import classify, gear, geo, results
+from app.services import classify, gear, geo, markdown, results
 
 read = reader_router()
 write = owner_router()
@@ -89,6 +89,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
         "location_lat": race.location_lat,
         "location_lng": race.location_lng,
         "notes": race.notes,
+        "notes_html": markdown.render(race.notes),
         "is_public": race.is_public,
         "category": category_ref(race.category),
         "weather": Weather(

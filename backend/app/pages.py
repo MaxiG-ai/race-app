@@ -57,6 +57,11 @@ def _shell(
     if description:
         tags.insert(1, f'<meta name="description" content="{escape(description)}">')
         tags.append(f'<meta property="og:description" content="{escape(description)}">')
+    if get_settings().site_mode == "public":
+        tags.append(
+            '<link rel="alternate" type="application/atom+xml" '
+            f'title="{escape(site_name)}" href="/feed.xml">'
+        )
     return _file(file).replace(PLACEHOLDER, "\n    ".join(tags), 1)
 
 

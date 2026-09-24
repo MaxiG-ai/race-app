@@ -58,3 +58,57 @@ def test_preview_text_is_escaped(anon, db, public_mode):
 
 def test_health(anon):
     assert anon.get("/health").json() == {"status": "ok"}
+
+
+# --- Atom feed (timeline.md#feed) --------------------------------------------------------
+
+
+def test_feed_lists_public_races_only(anon, owner, db, public_mode):
+    from datetime import UTC, datetime
+    from xml.etree.ElementTree import fromstring
+
+    make_race(db, name="Hidden race")
+    make_race(
+        db,
+        name="Shown <race>",
+        public=True,
+        notes="**PB**",
+        published_at=datetime(2026, 6, 22, tzinfo=UTC),
+        official={"total_time": 4360},
+    )
+    for client in (anon, owner):  # the owner's reader gets the public feed too
+        response = client.get("/feed.xml")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/atom+xml")
+        assert "Hidden race" not in response.text
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    feed = fromstring(anon.get("/feed.xml").content)
+    entries = feed.findall("a:entry", ns)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.findtext("a:title", namespaces=ns) == "Shown <race>"
+    assert entry.findtext("a:id", namespaces=ns) == "http://localhost/races/2"
+    assert entry.findtext("a:summary", namespaces=ns) == "21 Jun 2026 · 1:12:40"
+    assert entry.findtext("a:content", namespaces=ns) == "<p><strong>PB</strong></p>"
+    assert entry.findtext("a:published", namespaces=ns) == "2026-06-22T00:00:00+00:00"
+
+
+def test_feed_is_linked_from_public_shells_only(anon, owner, public_mode, monkeypatch):
+    assert 'href="/feed.xml"' in anon.get("/").text
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "site_mode", "private")
+    assert 'href="/feed.xml"' not in owner.get("/").text
+
+
+def test_private_instance_has_no_feed(anon, owner, db):
+    make_race(db, name="Anything", public=True)
+    assert anon.get("/feed.xml").status_code == 404
+    assert owner.get("/feed.xml").status_code == 404
+
+
+def test_empty_feed_is_valid(anon, public_mode):
+    from xml.etree.ElementTree import fromstring
+
+    feed = fromstring(anon.get("/feed.xml").content)
+    assert feed.findtext("{http://www.w3.org/2005/Atom}updated")

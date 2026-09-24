@@ -69,7 +69,9 @@ are fiddly to write by hand.
 
 Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
 `secrets` + a `session` table instead of a JWT library, `hashlib` for content hashes,
-`zoneinfo` for local race dates.
+`zoneinfo` for local race dates, `xml.etree` for the Atom feed, and a hand-written
+Markdown subset for race reports (a library would still need a sanitiser after it; see
+[race reports](features/races-and-results.md#race-reports)).
 
 Dev-only: `pytest`, `ruff`, `httpx` (FastAPI's test client), `fit-tool` (writes the
 synthetic FIT fixtures; [fit-files](reference/fit-files.md#testing-without-the-originals)).
@@ -90,8 +92,10 @@ race-app/
       schemas/          Pydantic models; owner and public shapes side by side
       routers/          one module per feature; read and owner-only write routers
       pages.py          page shells with <title> / Open Graph tags
+      feed.py           /feed.xml, the Atom feed of public races
       services/         fit_import (bytes → dataclasses), imports (uploads, grouping,
-                        primaries), results, classify, gear, weather, comparison, geo
+                        primaries), results, classify, gear, weather, comparison, geo,
+                        markdown (the race-report subset)
       migrations/       Alembic
       cli.py            create-owner, set-password, reimport
     tests/
@@ -112,6 +116,7 @@ race-app/
   docker-compose.yml    app + db, local and self-hosted
   docker-compose.public.yml, docker-compose.dev.yml   Caddy in front; bind-mounted source
   Caddyfile             only for the public deployment
+  .github/workflows/    CI: lint and tests on pull requests
 ```
 
 ## Conventions

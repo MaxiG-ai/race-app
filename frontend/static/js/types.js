@@ -63,6 +63,7 @@
  * @property {number|null} location_lat
  * @property {number|null} location_lng
  * @property {string|null} notes
+ * @property {string|null} notes_html  race report, rendered by the backend from escaped text
  * @property {boolean} is_public
  * @property {CategoryRef|null} category
  * @property {{temp_c: number|null, humidity_pct: number|null, conditions: string|null}} weather

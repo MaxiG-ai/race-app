@@ -22,7 +22,7 @@ race
   date                  not null — local race date; the timeline orders by it
   location_name         nullable
   location_lat / location_lng   nullable
-  notes                 nullable — plain text (Markdown: see backlog)
+  notes                 nullable — the race report, in the Markdown subset below
   is_public / published_at      see access-and-visibility.md
   race_category_id / auto_category_id / classification_*   see classification.md
   weather_temp_c / weather_humidity_pct / weather_conditions  see weather.md
@@ -115,6 +115,32 @@ It's shown as a checklist, not a warning banner: a race with an unknown age-grou
 isn't in an error state. The `public` group lists what a visitor would see as blank, so
 publishing is an informed choice.
 
+### Race reports
+
+`race.notes` is the race report. On a public site visitors read it, so it is stored as
+Markdown and rendered to HTML on read (`notes_html` on the race detail, and the Atom
+feed's `content`). A note shown to visitors is a stored-XSS vector, so the renderer is a
+deliberately tiny hand-written subset (`services/markdown.py`) rather than a library plus
+a sanitiser:
+
+| Markdown | HTML |
+|---|---|
+| `# ` / `## ` / `### ` heading | `h3` / `h4` / `h5` (the page owns `h1`/`h2`) |
+| `- item`, `* item` / `1. item` | `ul` / `ol` |
+| `> quote` | `blockquote` |
+| `**bold**`, `*italic*` / `_italic_`, `` `code` `` | `strong`, `em`, `code` |
+| `[text](url)` | `a href rel="nofollow noopener"` |
+| blank line / single newline | new paragraph / `br` |
+
+- **Escape first.** Every character of the input is HTML-escaped before any markup is
+  applied, and the only tags in the output are the ones in the table. There is no raw
+  HTML pass-through.
+- **Links** keep `http(s)://`, `mailto:`, same-site `/path` and `#anchor` targets only.
+  Any other link (`javascript:`, `data:`, protocol-relative `//host`) stays as its
+  literal text.
+- Anything the subset doesn't know is shown as typed. `notes` itself is returned
+  unchanged, so the edit form round-trips exactly.
+
 ### Partial writes
 
 Every write endpoint accepts any subset of fields. A field left out is left alone; an explicit `null` clears
@@ -129,3 +155,5 @@ invalid input (a negative time), never a missing one.
 - Three splits, no total → 422 with the missing splits named.
 - PATCH with a field left out doesn't change it; PATCH with `null` clears it.
 - Deleting a race sends its uploads back to the tray instead of deleting them.
+- `notes_html` only ever contains the subset's tags, with `href`/`rel` as the only
+  attributes; script, event-handler and `javascript:` inputs come out as text.

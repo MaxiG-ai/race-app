@@ -182,9 +182,14 @@ function renderMeta() {
       `<input id="m-lng" type="number" step="any" min="-180" max="180" data-field="location_lng"
         value="${race.location_lng ?? ""}">`)}
     <div class="field">
-      <label for="m-notes">Notes</label>
-      <textarea id="m-notes" data-field="notes">${esc(race.notes ?? "")}</textarea>
+      <label for="m-notes">Race report</label>
+      <textarea id="m-notes" data-field="notes" aria-describedby="m-notes-help">${esc(race.notes ?? "")}</textarea>
       <span class="field-status" id="m-notes-status"></span>
+      <p class="small muted" id="m-notes-help">Markdown: <code># heading</code>,
+        <code>- list</code>, <code>&gt; quote</code>, <code>**bold**</code>, <code>*italic*</code>,
+        <code>[link](https://…)</code>. Anything else is shown as typed.</p>
+      ${race.notes_html ? `<details><summary>Preview</summary>
+        <div class="prose card">${race.notes_html}</div></details>` : ""}
     </div>`;
 }
 

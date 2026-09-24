@@ -46,7 +46,8 @@ hundred points per segment (`services/geo.py`).
    [Trap 7](../reference/fit-files.md#trap-7)): a run may have pace/HR/power, a bike
    6–8 coarse 5 km points, and a one-lap swim is a summary tile rather than a line.
 5. **Conditions & fueling**: weather, carbs per segment, products, gear names.
-6. **Notes**: the race report.
+6. **Race report**: `notes_html`, the Markdown subset rendered by the backend
+   ([race reports](races-and-results.md#race-reports)).
 
 ## Rules
 

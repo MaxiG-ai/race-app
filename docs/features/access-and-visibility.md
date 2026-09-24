@@ -110,7 +110,7 @@ Never public:
 
 Public by default (owner-configurable later if it turns out to matter):
 - official result, recorded segment totals, lap splits, simplified course track,
-  weather, fueling, gear *names*, notes
+  weather, fueling, gear *names*, notes (and their rendered `notes_html`)
 
 ### New data is private
 
@@ -143,8 +143,8 @@ never goes public by accident. Publishing is always a deliberate click.
 
 - Private mode: every `/api` read without a session → 401, and every page except
   `login.html` redirects there.
-- Public mode, anonymous: timeline, detail, track, laps, stats and compare only ever
-  contain public races; a hidden race id → 404 on every route.
+- Public mode, anonymous: timeline, detail, track, laps, stats, compare and the feed only
+  ever contain public races; a hidden race id → 404 on every route.
 - Public responses contain none of the never-public fields. Test this by asserting the key
   set of each public shape exactly, not by spot-checking.
 - Every write route without a session → 401 in both modes. Enumerate all mounted write
