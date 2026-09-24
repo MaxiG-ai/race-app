@@ -6,14 +6,9 @@ onto the [roadmap](roadmap.md).
 
 ## Public site
 
-- **Race photos** (race-detail, timeline). Upload photos per race, and show one on the timeline
-  card *instead of* the course map when it exists. The map is the better default for a race
-  you're analysing; a photo is better for a race you're remembering. Needs a `race_photo`
-  table, storage on the uploads volume, thumbnails, **EXIF stripping** (GPS in the photo
-  metadata, which matters on a public site) and backup sizing.
-- **Preview images** (architecture). An `og:image` per race, e.g. a rendered course
-  thumbnail or the race photo. Rendering a map server-side needs a new backend
-  dependency, which has to justify itself.
+- **Course thumbnails as preview images** (architecture). Races with a cover photo already
+  get it as `og:image`; the rest have none. Rendering a map server-side needs a new
+  backend dependency, which has to justify itself.
 - **Public HR toggle, GPS privacy trim, unlisted races** (access-and-visibility, open questions).
 
 ## Analysis

@@ -79,7 +79,7 @@ That's the first release worth putting on a domain.
 
 ## Phase 9 — race photos
 
-- [ ] [photos](features/photos.md): upload, EXIF stripping, thumbnails, the cover photo
+- [x] [photos](features/photos.md): upload, EXIF stripping, thumbnails, the cover photo
       on the timeline card and as the link preview's `og:image`.
 
 ## After that

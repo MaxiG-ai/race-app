@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from app.access import DB, CurrentViewer, Viewer, owner_router, reader_router, visible_race
 from app.models import LapSplit, OfficialResult, Race, RecordedActivity, Upload
 from app.models.enums import SEGMENTS, ClassificationSource, Segment, UploadStatus
+from app.routers.photos import photo_out
 from app.schemas.races import (
     CategoryRef,
     Classification,
@@ -25,7 +26,7 @@ from app.schemas.races import (
     TrackSegment,
     Weather,
 )
-from app.services import classify, gear, geo, markdown, results
+from app.services import classify, gear, geo, markdown, photos, results
 
 read = reader_router()
 write = owner_router()
@@ -104,6 +105,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
             FuelingOut.model_validate(f)
             for f in sorted(race.fueling, key=lambda f: SEGMENTS.index(f.segment))
         ],
+        "photos": [photo_out(p) for p in race.photos],
     }
     if not viewer.is_owner:
         return RaceDetailPublic(**public)
@@ -221,8 +223,11 @@ def delete_race(race_id: int, db: DB):
         .where(Upload.race_id == race.id)
         .values(race_id=None, status=UploadStatus.PARSED)
     )
+    photo_ids = [p.id for p in race.photos]
     db.delete(race)
     db.commit()
+    for photo_id in photo_ids:
+        photos.remove(photo_id)
 
 
 @write.put("/races/{race_id}/official-result", response_model=RaceDetailOwner)

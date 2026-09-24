@@ -43,6 +43,7 @@ feature rewrite can't dilute it. Feature files link to it (e.g.
 | [fueling](features/fueling.md) | next | carbs and products per segment |
 | [gear](features/gear.md) | next | bikes and shoes, auto-detected from sensor serials, mileage |
 | [comparison](features/comparison.md) | later | two races side by side, gap-to-reference chart |
+| [photos](features/photos.md) | later | race photos, EXIF stripped, cover on the card and in previews |
 | [trends](features/trends.md) | later | pacing per sport over time, temperature against pace |
 | [strava](features/strava.md) | deferred | Strava as a secondary source |
 

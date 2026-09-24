@@ -24,7 +24,9 @@ def _routes(methods):
                     .replace("{b_id}", "2")
                     .replace("{upload_id}", "1")
                     .replace("{activity_id}", "1")
-                    .replace("{gear_id}", "1"),
+                    .replace("{gear_id}", "1")
+                    .replace("{photo_id}", "1")
+                    .replace("{size}", "thumb"),
                 )
 
 
@@ -132,6 +134,7 @@ def test_public_detail_has_exactly_the_public_keys(anon, db, public_mode):
             "official_result",
             "segments",
             "fueling",
+            "photos",
         }
     )
     assert {s["segment"] for s in body["segments"]} == {"swim", "bike", "run"}

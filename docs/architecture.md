@@ -65,6 +65,7 @@ are fiddly to write by hand.
 | `argon2-cffi` | password hashing for the owner login |
 | `pydantic-settings` | env-driven config |
 | `python-multipart` | FastAPI needs it to accept multipart FIT uploads |
+| `Pillow` | decoding, orientation, resizing and re-encoding race photos ([photos](features/photos.md#stripping-metadata)). JPEG/PNG/WebP decoding and resampling can't reasonably be written by hand, and re-encoding from pixels is what makes the EXIF stripping trustworthy |
 | `timezonefinder` | coordinate → timezone, offline, for the local race date ([Trap 11](reference/fit-files.md#trap-11)) and the weather hour. A lookup service would make every import depend on the network |
 
 Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
@@ -95,7 +96,7 @@ race-app/
       feed.py           /feed.xml, the Atom feed of public races
       services/         fit_import (bytes → dataclasses), imports (uploads, grouping,
                         primaries), results, classify, gear, weather, comparison, geo,
-                        markdown (the race-report subset)
+                        markdown (the race-report subset), photos (strip and re-encode)
       migrations/       Alembic
       cli.py            create-owner, set-password, reimport
     tests/
@@ -158,8 +159,9 @@ be in the HTML the server sends.
   site shell, exactly the same as a nonexistent id, so the preview never leaks a hidden
   race's name. In private mode every shell is generic.
 - Compare pages preview as "A vs B" only when both races are public.
-- No `og:image` in the first version. A rendered course thumbnail is in the
-  [backlog](backlog.md).
+- A public race with a cover photo gets `og:image` (plus its width and height) pointing at
+  the full-size photo ([photos](features/photos.md)). Races without photos have no image;
+  a rendered course thumbnail is in the [backlog](backlog.md).
 
 ## Open questions
 

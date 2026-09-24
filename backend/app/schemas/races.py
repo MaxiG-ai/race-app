@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.models.enums import ClassificationSource, Segment
 from app.schemas.common import Model, Patch, Seconds
+from app.schemas.photos import PhotoOut
 
 
 class CategoryRef(Model):
@@ -124,6 +125,7 @@ class RaceDetailPublic(BaseModel):
     official_result: OfficialResultOut | None
     segments: list[SegmentPublic]
     fueling: list[FuelingOut]
+    photos: list[PhotoOut]
 
 
 class Classification(BaseModel):
@@ -154,6 +156,7 @@ class RaceListItem(BaseModel):
     times_source: str | None  # "official" | "recorded": what the segment bar uses
     segment_times: dict[Segment, int | None]
     derived_segments: list[Segment]
+    cover_photo: PhotoOut | None
 
 
 class RaceList(BaseModel):

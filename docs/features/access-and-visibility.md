@@ -107,10 +107,13 @@ Never public:
 - device serials, `device_key`, `gear_device` mappings, the unknown-devices list
 - the `completeness` checklist, since it describes the owner's to-do list
 - non-primary recordings (visitors see the chosen recording per segment only)
+- photo metadata (EXIF, GPS) and `content_hash`; the original photo isn't even kept
+  ([photos](photos.md#stripping-metadata))
 
 Public by default (owner-configurable later if it turns out to matter):
 - official result, recorded segment totals, lap splits, simplified course track,
-  weather, fueling, gear *names*, notes (and their rendered `notes_html`)
+  weather, fueling, gear *names*, notes (and their rendered `notes_html`), the
+  re-encoded photos
 
 ### New data is private
 

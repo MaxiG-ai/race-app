@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.access import DB, CurrentViewer, reader_router, visible_races
 from app.models import Race, RecordedActivity
 from app.models.enums import SEGMENTS, SPORT_SEGMENTS
+from app.routers.photos import photo_out
 from app.routers.races import category_ref
 from app.schemas.races import RaceList, RaceListItem, Stats
 
@@ -40,6 +41,7 @@ def list_item(race: Race) -> RaceListItem:
         times_source=source,
         segment_times=times,
         derived_segments=derived,
+        cover_photo=photo_out(cover) if (cover := race.cover_photo()) else None,
     )
 
 
@@ -56,6 +58,7 @@ def list_races(
         query.options(
             selectinload(Race.official_result),
             selectinload(Race.category),
+            selectinload(Race.photos),
             # Only the columns the card needs: no tracks, no laps, no raw_data.
             selectinload(Race.activities).load_only(
                 RecordedActivity.segment,

@@ -27,6 +27,10 @@
 
 .race-card { display: block; text-decoration: none; color: inherit; }
 .race-card:hover { border-color: var(--ink-muted); }
+/* A race you're remembering: the cover photo heads the card (photos.md#ui). */
+.race-card.has-photo { padding-top: 0; overflow: hidden; }
+.race-card-photo { display: block; width: calc(100% + 2rem); max-width: none; height: auto;
+  aspect-ratio: 16 / 7; object-fit: cover; margin: 0 -1rem 0.75rem; background: var(--bg); }
 
 .race-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
 .race-name { font-weight: 600; }

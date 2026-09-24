@@ -76,6 +76,7 @@
  * @property {{temp_c: number|null, humidity_pct: number|null, conditions: string|null}} weather
  * @property {OfficialResult|null} official_result
  * @property {SegmentOut[]} segments
+ * @property {Photo[]} photos
  * @property {Fueling[]} fueling
  * @property {string|null} [published_at]
  * @property {string|null} [weather_fetched_at]
@@ -98,6 +99,7 @@
  * @property {"official"|"recorded"|null} times_source
  * @property {Record<Segment, number|null>} segment_times
  * @property {Segment[]} derived_segments
+ * @property {Photo|null} cover_photo
  */
 
 /**
@@ -171,4 +173,15 @@ export {};
  * @property {number|null} temp_c
  * @property {number|null} humidity_pct
  * @property {Record<string, SportTotals|null>} sports  swim, bike, run
+ */
+
+/**
+ * @typedef {Object} Photo  re-encoded copies only; EXIF never reaches the server's disk
+ * @property {number} id
+ * @property {string|null} caption
+ * @property {number} width
+ * @property {number} height
+ * @property {boolean} is_cover
+ * @property {string} thumb_url
+ * @property {string} full_url
  */

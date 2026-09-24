@@ -51,6 +51,7 @@ hundred points per segment (`services/geo.py`).
 5. **Conditions & fueling**: weather, carbs per segment, products, gear names.
 6. **Race report**: `notes_html`, the Markdown subset rendered by the backend
    ([race reports](races-and-results.md#race-reports)).
+7. **Photos**: the gallery, when there are any ([photos](photos.md#ui)).
 
 ## Rules
 

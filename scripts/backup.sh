@@ -2,7 +2,7 @@
 #
 # Nightly backup for race-app (docs/operations/deployment.md#backups): a `pg_dump` (custom format, so
 # it's restorable with `pg_restore` and independent of server version quirks)
-# plus a mirror of the retained original FIT uploads. Both land under
+# plus a mirror of the uploads volume (FIT originals and race photos). Both land under
 # $BACKUP_DIR on the host — that's deliberate: it puts them in an ordinary
 # directory that whatever offsite backup the VPS already runs (restic,
 # borg, a cron rsync to another box, ...) can pick up without knowing
@@ -71,20 +71,20 @@ fi
 mv "${DUMP_FILE}.tmp" "$DUMP_FILE"
 log "database dump complete ($(du -h "$DUMP_FILE" | cut -f1))"
 
-# --- Original FIT uploads -----------------------------------------------------
+# --- Uploads volume: FIT originals and photos/ ----------------------------------
 # Mirror the named volume's contents onto the host via a throwaway container —
 # rsync --delete keeps this a true mirror (an upload can be discarded via
 # DELETE /uploads/{id}), so re-running never accumulates stale files.
-log "mirroring FIT originals from volume '$UPLOADS_VOLUME' -> $UPLOADS_BACKUP_DIR"
+log "mirroring uploads (FIT originals, photos) from volume '$UPLOADS_VOLUME' -> $UPLOADS_BACKUP_DIR"
 if ! docker run --rm \
     -v "${UPLOADS_VOLUME}:/source:ro" \
     -v "${UPLOADS_BACKUP_DIR}:/dest" \
     alpine:3.20 \
     sh -c 'apk add --no-cache rsync >/dev/null && rsync -a --delete /source/ /dest/'; then
-    log "ERROR: FIT originals mirror failed"
+    log "ERROR: uploads mirror failed"
     exit 1
 fi
-log "FIT originals mirror complete ($(du -sh "$UPLOADS_BACKUP_DIR" | cut -f1))"
+log "uploads mirror complete ($(du -sh "$UPLOADS_BACKUP_DIR" | cut -f1))"
 
 # --- Rotation ------------------------------------------------------------------
 log "rotating db dumps older than $RETENTION_DAYS days in $DB_BACKUP_DIR"

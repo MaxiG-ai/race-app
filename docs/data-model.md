@@ -14,6 +14,7 @@ race ────────────────┤
  │                   │
  ├── official_result (1:1)
  ├── race_fueling    (1:n, one per segment)
+ ├── race_photo      (1:n, ≤ 1 is_cover) ── re-encoded JPEGs on disk
  └── recorded_activity (1:n, ≥ 5; one is_primary per segment)
         │   ▲
         │   └── upload (n:1, nullable) ── stored FIT original on disk
@@ -33,6 +34,7 @@ race ────────────────┤
 | `race_category` | [classification](features/classification.md#data) | seeded, editable as data |
 | `race_fueling` | [fueling](features/fueling.md#data) | |
 | `gear`, `gear_device`, `activity_gear` | [gear](features/gear.md#data) | |
+| `race_photo` | [photos](features/photos.md#data) | files on the uploads volume |
 
 Weather columns live on `race` but are written by [weather](features/weather.md).
 
@@ -53,3 +55,4 @@ about *visibility* (who can see a race), not ownership. It lives in one place:
 - Partial unique `recorded_activity(race_id, segment) WHERE is_primary`, so each segment has
   exactly one primary recording.
 - Unique `upload(content_hash)` for idempotent uploads.
+- Unique `race_photo(race_id, content_hash)`; partial unique `race_photo(race_id) WHERE is_cover`.

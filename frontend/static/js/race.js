@@ -46,6 +46,7 @@ async function main_() {
   renderSplits();
   renderConditions();
   renderNotes();
+  renderPhotos();
   renderRecordings();
 
   // Track and laps load independently; a failure in one shouldn't blank the page.
@@ -67,6 +68,7 @@ function skeleton() {
     </section>
     <section id="race-conditions"></section>
     <section id="race-notes"></section>
+    <section id="race-photos"></section>
     <section id="race-recordings"></section>
   `;
 }
@@ -385,6 +387,22 @@ function renderNotes() {
     <h2>Race report</h2>
     ${r.notes_html ? `<div class="prose">${r.notes_html}</div>` : `<p class="muted">${DASH}</p>`}
   `;
+}
+
+function renderPhotos() {
+  const r = /** @type {import("./types.js").RaceDetail} */ (race);
+  const section = /** @type {HTMLElement} */ (document.getElementById("race-photos"));
+  if (!r.photos.length) { section.innerHTML = ""; return; }
+  section.innerHTML = `
+    <h2>Photos</h2>
+    <ul class="gallery">
+      ${r.photos.map((p) => `<li><figure>
+        <a href="${esc(p.full_url)}"><img src="${esc(p.thumb_url)}" loading="lazy"
+          width="${p.width}" height="${p.height}"
+          alt="${esc(p.caption ?? `Photo from ${r.name}`)}"></a>
+        ${p.caption ? `<figcaption class="small muted">${esc(p.caption)}</figcaption>` : ""}
+      </figure></li>`).join("")}
+    </ul>`;
 }
 
 function renderRecordings() {

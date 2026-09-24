@@ -12,6 +12,7 @@ from app.routers import (
     fueling,
     gear,
     imports,
+    photos,
     races,
     timeline,
     trends,
@@ -34,6 +35,8 @@ ROUTERS = [
     weather.write,
     fueling.write,
     gear.write,
+    photos.read,
+    photos.write,
 ]
 
 
