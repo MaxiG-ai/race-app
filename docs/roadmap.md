@@ -74,7 +74,7 @@ That's the first release worth putting on a domain.
 
 ## Phase 8 — dark mode
 
-- [ ] One `prefers-color-scheme` token block, the palette re-checked on the dark surface
+- [x] One `prefers-color-scheme` token block, the palette re-checked on the dark surface
       ([visual-system](design/visual-system.md#theme)).
 
 ## Phase 9 — race photos

@@ -37,7 +37,5 @@ onto the [roadmap](roadmap.md).
 
 ## Platform
 
-- **Dark mode** (design). One `prefers-color-scheme` block once the tokens are stable; the
-  palette needs re-checking on a dark surface.
 - **PostGIS** (import). Only if spatial queries ("races whose bike course passes near X")
   become real.

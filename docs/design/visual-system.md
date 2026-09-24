@@ -28,7 +28,33 @@ anywhere else.
 were ΔE 2.0 apart under protanopia and **10.2 under normal vision**, below the floor of 15.
 The segment bar puts all three next to each other, so that's a legibility bug. The values above
 pass all six checks against `--bg` (worst adjacent pair ΔE 9.3 deutan / 15.3 normal);
-faster/slower passes at ΔE 11.1 / 24.3. Re-run the check if any value changes.
+faster/slower passes at ΔE 11.1 / 24.3.
+
+The check is a test, `backend/tests/test_palette.py`, which reads `tokens.css` and runs
+for both themes, so a token change that breaks legibility fails CI. ΔE is the OKLab
+distance × 100; colour blindness is simulated with Machado et al. (2009) at full
+severity. The six checks, for every sport pair and for faster/slower:
+
+1. ΔE ≥ 15 under normal vision;
+2–4. ΔE ≥ 8 under protanopia, deuteranopia and tritanopia;
+5–6. contrast ≥ 3:1 against `--bg` and against `--surface`.
+
+Text tokens (`--ink`, `--ink-muted`, `--danger`) must reach 4.5:1 on both backgrounds.
+
+### Dark values
+
+| Token | Hex | | Token | Hex |
+|---|---|---|---|---|
+| `--bg` | `#121517` | | `--swim` / `--faster` | `#4CBDB0` |
+| `--surface` | `#1A1F21` | | `--bike` | `#E6C35C` |
+| `--ink` | `#E7E5DF` | | `--run` / `--slower` | `#C4553F` |
+| `--ink-muted` | `#A3A9A6` | | `--transition` | `#555C5B` |
+| `--hairline` | `#2E3437` | | `--neutral` | `#92928C` |
+
+The sport hues are the light ones lifted for a dark surface. Bike against run is again
+the hard pair, so they are split by lightness as well as hue: bike is the lightest
+colour on the page, run the darkest. Worst adjacent pair ΔE 13.3 protan / 19.6 normal;
+faster/slower 16.6 deutan / 28.3 normal; the lowest contrast is run on `--surface`, 3.7:1.
 
 **Each chart uses colour for one thing only.** In the gap chart, hue already means faster/slower,
 so course segments are marked with vertical rules and text labels, not tinted with sport
@@ -47,8 +73,17 @@ secondary to the three sports. Derived transitions are hatched.
 
 ## Theme
 
-Light only. Dark mode is in the [backlog](../backlog.md). Because every colour is already a token,
-adding it later means one `prefers-color-scheme` block, not a refactor.
+Light and dark, following the operating system: `tokens.css` has one
+`@media (prefers-color-scheme: dark)` block that redefines every colour token, and
+`color-scheme: light dark` so native controls and scrollbars follow. No page CSS knows
+which theme it's in. There's no in-page toggle; the system setting is the switch.
+
+- Charts read their colours from the tokens when the page loads, so a chart drawn before
+  the system theme changes keeps its colours until the page is reloaded.
+- Chart tooltips are `--ink` with `--bg` text: inverted in both themes.
+- Map tiles are OpenStreetMap's and stay light. In the dark theme the lifted sport
+  colours (the bike especially) have less contrast on those tiles than the light ones
+  do. A dark tile layer would mean a second tile provider; not done.
 
 ## Signature element
 

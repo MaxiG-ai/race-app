@@ -30,6 +30,8 @@ function configure() {
   Chart.defaults.maintainAspectRatio = false; // the .chart container fixes the ratio
   Chart.defaults.plugins.legend.display = false; // lines are labelled directly
   Chart.defaults.plugins.tooltip.backgroundColor = token("--ink");
+  Chart.defaults.plugins.tooltip.titleColor = token("--bg"); // inverse of the ink, in both themes
+  Chart.defaults.plugins.tooltip.bodyColor = token("--bg");
   Chart.defaults.plugins.tooltip.mode = "index";
   Chart.defaults.plugins.tooltip.intersect = false;
   Chart.defaults.datasets.line.spanGaps = false; // a gap in the data is a gap in the line
