@@ -40,6 +40,7 @@ from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
+from fit_tool.profile.messages.time_in_zone_message import TimeInZoneMessage
 from fit_tool.profile.messages.timestamp_correlation_message import TimestampCorrelationMessage
 from fit_tool.profile.profile_type import (
     Event,
@@ -92,6 +93,7 @@ LID_ACTIVITY = 5
 LID_DEV_DATA_ID = 6
 LID_FIELD_DESC = 7
 LID_TS_CORR = 8
+LID_TIME_IN_ZONE = 9
 
 
 def lerp(a: float, b: float, f: float) -> float:
@@ -485,6 +487,66 @@ def emit_activity(
     builder.add(act)
 
 
+# Garmin writes one time_in_zone message per session (and per lap) near the end of the
+# file. The zone tables are the watch's settings; the seconds are computed from the
+# session's own record stream, so they always add up to the recorded time.
+GARMIN_HR_ZONE_HIGH = [100, 120, 135, 150, 165, 185]  # bpm, zone 0 .. zone 5
+GARMIN_MAX_HR, GARMIN_RESTING_HR, GARMIN_THRESHOLD_HR = 185, 48, 165
+GARMIN_POWER_ZONE_HIGH = [140, 200, 240, 280, 320, 380, 2000]  # W, zone 0 .. zone 6
+GARMIN_FTP = 265
+MESG_NUM_SESSION, MESG_NUM_LAP = 18, 19
+
+
+def zone_seconds(stat, high: list[int], value) -> list[int]:
+    """Whole seconds per zone: each record holds until the next one (the last until the
+    session's derived end); a record without a value counts nowhere."""
+    records = stat.records
+    out = [0.0] * len(high)
+    for i, r in enumerate(records):
+        v = value(r)
+        if v is None:
+            continue
+        until = records[i + 1].timestamp if i + 1 < len(records) else stat.derived_end
+        zone = next((z for z, h in enumerate(high) if v <= h), len(high) - 1)
+        out[zone] += (until - r.timestamp).total_seconds()
+    return [round(x) for x in out]
+
+
+def emit_time_in_zone(builder: FitFileBuilder, stats: list) -> list[dict]:
+    """One per session, plus one for the first lap (which the importer must ignore)."""
+    written = []
+    for index, stat in enumerate(stats):
+        tiz = TimeInZoneMessage(local_id=LID_TIME_IN_ZONE)
+        tiz.timestamp = unix_ms(stat.derived_end)
+        tiz.reference_mesg = MESG_NUM_SESSION
+        tiz.reference_index = index
+        hr = zone_seconds(stat, GARMIN_HR_ZONE_HIGH, lambda r: r.hr)
+        tiz.time_in_hr_zone = [float(x) for x in hr]
+        tiz.hr_zone_high_boundary = GARMIN_HR_ZONE_HIGH
+        tiz.hr_calc_type = 1  # percent_max_hr
+        tiz.max_heart_rate = GARMIN_MAX_HR
+        tiz.resting_heart_rate = GARMIN_RESTING_HR
+        tiz.threshold_heart_rate = GARMIN_THRESHOLD_HR
+        entry = {"segment": stat.seg.name, "index": index, "hr": hr, "power": None}
+        if any(r.power is not None for r in stat.records):
+            power = zone_seconds(stat, GARMIN_POWER_ZONE_HIGH, lambda r: r.power)
+            tiz.time_in_power_zone = [float(x) for x in power]
+            tiz.power_zone_high_boundary = GARMIN_POWER_ZONE_HIGH
+            tiz.functional_threshold_power = GARMIN_FTP
+            tiz.pwr_calc_type = 1  # percent_ftp
+            entry["power"] = power
+        builder.add(tiz)
+        written.append(entry)
+    lap = TimeInZoneMessage(local_id=LID_TIME_IN_ZONE)
+    lap.timestamp = unix_ms(stats[0].derived_end)
+    lap.reference_mesg = MESG_NUM_LAP
+    lap.reference_index = 0
+    lap.time_in_hr_zone = [999.0] * len(GARMIN_HR_ZONE_HIGH)
+    lap.hr_zone_high_boundary = GARMIN_HR_ZONE_HIGH
+    builder.add(lap)
+    return written
+
+
 def emit_file_id(
     builder: FitFileBuilder, manufacturer: int, product, serial: int, time_created: datetime
 ) -> None:
@@ -774,6 +836,7 @@ def build_garmin_multisport() -> tuple[bytes, dict]:
     stats.append(emit_segment(builder, base_dt, run))
 
     emit_activity(builder, stats[-1].end_time_recorded, sum(s.seg.timer for s in stats), len(stats))
+    time_in_zone = emit_time_in_zone(builder, stats)
 
     fit_bytes = builder.build_bytes()
     meta = {
@@ -784,6 +847,7 @@ def build_garmin_multisport() -> tuple[bytes, dict]:
         "segments": stats,
         "orphan_offset": orphan_offset,
         "orphan_timestamp": orphan_ts,
+        "time_in_zone": time_in_zone,
     }
     return fit_bytes, meta
 
@@ -1343,6 +1407,16 @@ def self_check_garmin(path: Path, meta: dict) -> None:
     orphan_count = sum(1 for t in all_ts if not bucket_half_open_clamped(t, windows))
     assert orphan_count == 1, orphan_count
 
+    zones = [f for f in frames if f.name == "time_in_zone"]
+    by_session = [z for z in zones if field_val(z, "reference_mesg") == "session"]
+    assert len(by_session) == 5 and len(zones) == 6, len(zones)
+    for frame, expected in zip(by_session, meta["time_in_zone"], strict=True):
+        assert field_val(frame, "reference_index") == expected["index"]
+        assert list(field_val(frame, "hr_zone_high_boundary")) == GARMIN_HR_ZONE_HIGH
+        assert [round(x) for x in field_val(frame, "time_in_hr_zone")] == expected["hr"]
+        power = field_val(frame, "time_in_power_zone")
+        assert (power and [round(x) for x in power]) == (expected["power"] or None)
+
 
 def self_check_overlap(path: Path, meta: dict) -> None:
     check_common(path, meta)
@@ -1574,6 +1648,18 @@ def write_readme(all_meta: dict) -> None:
         f"sits at {fmt_dt(meta['orphan_timestamp'])}, inside that gap, matching no session "
         "window. It must be counted as an orphan, not silently dropped or assigned."
     )
+    lines.append(
+        "- `time_in_zone`: one message per session (`reference_mesg` = `session`, "
+        "`reference_index` = the session's position in the file), written after the "
+        "`activity` message, plus one for lap 0 (`reference_mesg` = `lap`, 999 s in every "
+        "zone) that the importer must ignore. HR zone high boundaries "
+        f"{GARMIN_HR_ZONE_HIGH} bpm (zone 0 .. zone 5); the bike also carries power zones, "
+        f"high boundaries {GARMIN_POWER_ZONE_HIGH} W, FTP {GARMIN_FTP} W. Seconds per zone "
+        "(whole seconds, computed from each session's records):"
+    )
+    for z in meta["time_in_zone"]:
+        power = f"; power {z['power']}" if z["power"] else ""
+        lines.append(f"  - {z['segment']}: HR {z['hr']}{power}")
     lines.append("")
 
     # overlap_boundary.fit

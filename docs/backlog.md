@@ -18,12 +18,12 @@ onto the [roadmap](roadmap.md).
 
 ## Analysis
 
-- **Cross-race trends** (timeline). Pacing per sport over time, and weather against
-  performance. The schema supports both; no UI is specified.
 - **Comparing more than two races** (comparison). Needs a categorical palette; the fill goes.
-- **Garmin `time_in_zone` and cycling dynamics** (import). L/R balance, torque
-  effectiveness and HR zones are parsed into `raw_data` but not modelled. They're cheap to
-  promote.
+- **Cycling dynamics** (import). L/R balance, torque effectiveness and pedal smoothness
+  are in the session's `raw_data` but not modelled. Cheap to promote, like
+  [time in zone](features/import.md#time-in-zone) was.
+- **HR and power trends** (trends). Average HR or power per sport over time; the
+  `/api/trends` rows already carry both.
 
 ## Data entry
 

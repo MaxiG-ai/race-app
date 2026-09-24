@@ -8,9 +8,6 @@
 #race-map .map { margin-top: 0.5rem; }
 #map-body p { margin-top: 0.5rem; }
 
-.tabs { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
-.tabs button { border-color: var(--hairline); }
-.tabs button[aria-selected="true"] { border-color: var(--ink); font-weight: 600; }
 
 .summary-tile { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
   gap: 0.75rem 1rem; background: var(--surface); border: 1px solid var(--hairline);
@@ -21,3 +18,9 @@
 .recordings-list li { display: flex; align-items: center; gap: 0.75rem; }
 .recordings-list .badge { margin-left: auto; }
 .recordings-list button { margin-left: auto; }
+
+.zones-title { margin-top: 1.25rem; font-size: var(--text-sm); }
+.zones .zone-bar-cell { width: 40%; }
+.zones td { white-space: nowrap; }
+.zone-bar { display: block; height: 8px; min-width: 1px; border-radius: 2px;
+  background: var(--neutral); }

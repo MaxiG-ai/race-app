@@ -14,6 +14,7 @@ from app.routers import (
     imports,
     races,
     timeline,
+    trends,
     weather,
 )
 
@@ -29,6 +30,7 @@ ROUTERS = [
     classification.read,
     classification.write,
     comparison.read,
+    trends.read,
     weather.write,
     fueling.write,
     gear.write,

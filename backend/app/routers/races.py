@@ -60,6 +60,7 @@ def _segment_fields(a: RecordedActivity) -> dict:
         "avg_cadence": a.avg_cadence,
         "lap_count": len(a.laps),
         "bounds": _bounds(a),
+        "time_in_zone": a.time_in_zone,
         "gear": [GearName.model_validate(link.gear) for link in a.gear_links],
     }
 

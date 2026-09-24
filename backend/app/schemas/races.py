@@ -54,6 +54,16 @@ class GearName(Model):
     kind: str
 
 
+class ZoneSet(BaseModel):
+    high: list[int]  # upper bound of each zone (bpm or W); zone 0 is below zone 1
+    seconds: list[int]  # may have one more entry than `high`: the open-ended top zone
+
+
+class TimeInZone(BaseModel):
+    hr: ZoneSet | None
+    power: ZoneSet | None
+
+
 class SegmentPublic(Model):
     """The primary recording of one segment."""
 
@@ -72,6 +82,7 @@ class SegmentPublic(Model):
     avg_cadence: int | None
     lap_count: int
     bounds: list[float] | None  # [n, s, e, w]
+    time_in_zone: TimeInZone | None  # only from devices that record it
     gear: list[GearName]
 
 

@@ -214,6 +214,57 @@ export function gapChart(canvas, cmp, names) {
   });
 }
 
+/**
+ * Points on two linear axes: pace over time (x = day number) or pace against
+ * temperature. One series, one colour. Points without a value are simply not drawn.
+ * @param {HTMLCanvasElement} canvas
+ * @param {{points: {x: number, y: number, label: string}[], colour: string,
+ *   line?: boolean, xTitle: string, yTitle: string, reverse?: boolean,
+ *   xFormat: (v: number) => string, yFormat: (v: number) => string}} spec
+ */
+export function xyChart(canvas, spec) {
+  configure();
+  return new (lib())(canvas, {
+    type: "scatter",
+    data: {
+      datasets: [{
+        label: spec.yTitle,
+        data: spec.points,
+        borderColor: spec.colour,
+        backgroundColor: spec.colour,
+        showLine: !!spec.line,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+      }],
+    },
+    options: {
+      scales: {
+        x: {
+          type: "linear", grid: { display: false },
+          title: { display: true, text: spec.xTitle },
+          ticks: { maxRotation: 0, callback: (/** @type {number} */ v) => spec.xFormat(v) },
+        },
+        y: {
+          reverse: !!spec.reverse,
+          title: { display: true, text: spec.yTitle },
+          ticks: { callback: (/** @type {number} */ v) => spec.yFormat(v) },
+        },
+      },
+      plugins: {
+        tooltip: {
+          mode: "nearest",
+          intersect: true,
+          callbacks: {
+            title: (/** @type {any[]} */ items) => items[0]?.raw?.label ?? "",
+            label: (/** @type {any} */ item) =>
+              `${spec.xFormat(item.raw.x)} · ${spec.yFormat(item.raw.y)}`,
+          },
+        },
+      },
+    },
+  });
+}
+
 /** Keep values at least `gap` apart (on a 0..1 axis), so tick labels don't collide. */
 function spaced(/** @type {number[]} */ values, /** @type {number} */ gap) {
   /** @type {number[]} */

@@ -54,6 +54,7 @@ sport alone.**
 | Sampling | uniform 1 Hz | **smart recording**, variable: run 699 points over 2 803 s (~0.25 Hz), bike 4 349 over 4 355 s (1 Hz) |
 | Temperature | absent | **on 100 % of records**, 24–35 °C |
 | Cadence | 35 % of records in one file, absent in the other | 100 % of records |
+| `time_in_zone` | absent | **one per session and per lap**: HR zones (and power zones on the bike), with the watch's zone boundaries |
 | Developer fields | `SESSION UUID`, `INDOOR`, `ACTIVITY TYPE`, `RPE ESTIMATED`, `AVG METs`, `WEATHER HUMIDITY` | none |
 | `elapsed` vs `timer` | identical (no pauses) | **differ** (bike 4 354.9 s vs 4 348.9 s) |
 

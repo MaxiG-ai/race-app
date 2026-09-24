@@ -15,7 +15,11 @@ export async function header(links = {}) {
   head.className = "page site-header";
   head.style.paddingBottom = "0";
   head.innerHTML = `<a class="site-title" href="/">${esc(site.site_title)}</a>
-    ${site.athlete_name ? `<span class="muted">${esc(site.athlete_name)}</span>` : ""}`;
+    ${site.athlete_name ? `<span class="muted">${esc(site.athlete_name)}</span>` : ""}
+    <nav class="site-nav" aria-label="Site"><a href="/">Races</a><a href="/trends">Trends</a></nav>`;
+  head.querySelectorAll(".site-nav a").forEach((a) => {
+    if (a.getAttribute("href") === location.pathname) a.setAttribute("aria-current", "page");
+  });
   document.body.prepend(head);
   if (who.owner) {
     const bar = document.createElement("nav");

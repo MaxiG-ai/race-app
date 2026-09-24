@@ -144,6 +144,14 @@ def compare_page(
     return _shell("compare.html", site.site_title, str(request.base_url))
 
 
+@router.get("/trends", response_class=HTMLResponse)
+def trends_page(request: Request, db: DB, viewer: CurrentViewer):
+    if redirect := _gate(request, viewer):
+        return redirect
+    site = site_settings(db)
+    return _shell("trends.html", site.site_title, str(request.base_url), "Trends")
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: DB):
     return _shell("login.html", site_settings(db).site_title, str(request.base_url), "Log in")

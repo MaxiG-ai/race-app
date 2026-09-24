@@ -90,6 +90,7 @@ class ParsedSession:
     laps: list[ParsedLap]
     devices: list[ParsedDevice]
     raw_data: dict[str, Any]
+    time_in_zone: dict[str, Any] | None = None
 
     @property
     def end_time(self) -> datetime:
@@ -141,6 +142,7 @@ def parse_fit(data: bytes) -> ParsedFile:
     laps: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
     device_infos: list[dict[str, Any]] = []
+    zones: dict[int, dict[str, Any]] = {}  # session index in the file -> time_in_zone
     tcorr: dict[str, Any] | None = None
     file_id: dict[str, Any] = {}
     try:
@@ -158,6 +160,8 @@ def parse_fit(data: bytes) -> ParsedFile:
                         laps.append(fields)
                     case "device_info":
                         device_infos.append(fields)
+                    case "time_in_zone" if fields.get("reference_mesg") == "session":
+                        zones.setdefault(fields.get("reference_index") or 0, fields)
                     case "timestamp_correlation" if tcorr is None:
                         tcorr = fields
                     case "file_id" if not file_id:
@@ -167,7 +171,11 @@ def parse_fit(data: bytes) -> ParsedFile:
 
     if not sessions:
         raise FitParseError("The FIT file contains no sessions.")
-    sessions.sort(key=lambda s: s["start_time"])
+    # Sort by start time, but keep each session's position in the file: time_in_zone
+    # refers to sessions by that position.
+    order = sorted(range(len(sessions)), key=lambda i: sessions[i]["start_time"])
+    sessions = [sessions[i] for i in order]
+    session_zones = [time_in_zone(zones.get(i)) for i in order]
     kind, segments = _check_shape(sessions)
 
     windows = _windows(sessions)
@@ -181,6 +189,8 @@ def parse_fit(data: bytes) -> ParsedFile:
         _session(segments[i], sessions[i], lap_buckets[i], record_buckets[i], device_buckets[i])
         for i in range(len(sessions))
     ]
+    for session, zone in zip(parsed, session_zones, strict=True):
+        session.time_in_zone = zone
     local_date, tz_warning = _local_date(parsed[0].start_time, records, tcorr)
     warnings = [tz_warning] if tz_warning else []
     if orphans:
@@ -474,6 +484,33 @@ def _local_date(
             return start.astimezone(ZoneInfo(zone)).date(), None
         break
     return start.date(), "No position or timezone in the file; the race date is the UTC date."
+
+
+def _zone_set(high: Any, seconds: Any) -> dict[str, list[int]] | None:
+    """{high, seconds}: each zone's upper bound and whole seconds spent in it. A device may
+    write one more time than boundaries (the open-ended top zone); anything else that
+    doesn't line up, or no time at all, is unknown rather than a guess."""
+    if not high or not seconds:
+        return None
+    high = [int(h) for h in high if h is not None]
+    seconds = [round(t or 0) for t in seconds]
+    if len(seconds) not in (len(high), len(high) + 1) or not any(seconds):
+        return None
+    return {"high": high, "seconds": seconds}
+
+
+def time_in_zone(fields: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A session's `time_in_zone` message → {hr, power}, each a zone set or null.
+
+    Only devices that write the message have zones (Garmin); nothing is inferred from
+    the sport or computed from records, because the zone table is the watch's setting."""
+    if not fields:
+        return None
+    hr = _zone_set(fields.get("hr_zone_high_boundary"), fields.get("time_in_hr_zone"))
+    power = _zone_set(fields.get("power_zone_high_boundary"), fields.get("time_in_power_zone"))
+    if hr is None and power is None:
+        return None
+    return {"hr": hr, "power": power}
 
 
 def _json_safe(value: Any) -> Any:

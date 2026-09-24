@@ -67,9 +67,9 @@ That's the first release worth putting on a domain.
 
 ## Phase 7 — analysis across races
 
-- [ ] [trends](features/trends.md): pacing per sport over time, weather against
+- [x] [trends](features/trends.md): pacing per sport over time, weather against
       performance.
-- [ ] Garmin `time_in_zone` promoted from the FIT file into the model and shown on the
+- [x] Garmin `time_in_zone` promoted from the FIT file into the model and shown on the
       race page ([import](features/import.md), [race-detail](features/race-detail.md)).
 
 ## Phase 8 — dark mode

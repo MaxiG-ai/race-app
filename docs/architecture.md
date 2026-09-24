@@ -20,8 +20,8 @@
   proxy in front adds TLS and nothing else ([deployment](operations/deployment.md)).
 - **The frontend is files, not a build.** HTML pages load ES modules straight from
   `/static/js/`. What is in the repository is exactly what the browser gets.
-- **Public pages are served through a thin shell.** `/`, `/races/{id}` and `/compare`
-  are routes on the backend that return the page's static HTML with `<title>` and
+- **Public pages are served through a thin shell.** `/`, `/races/{id}`, `/compare` and
+  `/trends` are routes on the backend that return the page's static HTML with `<title>` and
   Open Graph tags filled in, so shared links get a proper preview
   ([Link previews](#link-previews)). Everything else on the page is still rendered by JS
   from the JSON API.
@@ -105,6 +105,7 @@ race-app/
     index.html          timeline            served at /
     race.html           race detail         served at /races/{id}
     compare.html        comparison          served at /compare?a=&b=
+    trends.html         trends              served at /trends
     login.html
     admin/              import, race-edit, gear, site — owner only, served at /admin/<name>
     static/

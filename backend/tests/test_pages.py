@@ -112,3 +112,12 @@ def test_empty_feed_is_valid(anon, public_mode):
 
     feed = fromstring(anon.get("/feed.xml").content)
     assert feed.findtext("{http://www.w3.org/2005/Atom}updated")
+
+
+def test_trends_page_is_a_reader_page(anon, owner, public_mode, monkeypatch):
+    assert "<title>Trends · Race history</title>" in anon.get("/trends").text
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "site_mode", "private")
+    assert anon.get("/trends", follow_redirects=False).status_code == 303
+    assert owner.get("/trends").status_code == 200

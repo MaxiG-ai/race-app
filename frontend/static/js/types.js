@@ -37,7 +37,14 @@
  * @property {number|null} avg_cadence
  * @property {number} lap_count
  * @property {number[]|null} bounds  [n, s, e, w]
+ * @property {{hr: ZoneSet|null, power: ZoneSet|null}|null} time_in_zone  device-recorded only
  * @property {{id: number, name: string, kind: string}[]} gear
+ */
+
+/**
+ * @typedef {Object} ZoneSet
+ * @property {number[]} high  upper bound of each zone; zone 0 is below zone 1
+ * @property {number[]} seconds  one per zone, or one more: the open-ended top zone
  */
 
 /**
@@ -146,3 +153,22 @@
 /** @typedef {{site_title: string, athlete_name: string|null, about: string|null}} Site */
 
 export {};
+
+/**
+ * @typedef {Object} SportTotals  the primary recording's totals; pace is derived
+ * @property {number|null} distance_m
+ * @property {number} elapsed_time
+ * @property {number|null} avg_hr
+ * @property {number|null} avg_power
+ */
+
+/**
+ * @typedef {Object} TrendRace  one row of /api/trends
+ * @property {number} id
+ * @property {string} name
+ * @property {string} date
+ * @property {CategoryRef|null} category
+ * @property {number|null} temp_c
+ * @property {number|null} humidity_pct
+ * @property {Record<string, SportTotals|null>} sports  swim, bike, run
+ */

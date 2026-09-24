@@ -62,6 +62,7 @@ recorded_activity             one row per segment per upload
   gps_track           jsonb — [{lat, lng, elevation, t, distance_m}]; distance_m is the
                       device's own odometer, not recomputed from coordinates
   progress_series     jsonb — ~200 resampled {progress, elapsed_s, distance_m} (comparison.md)
+  time_in_zone        jsonb, nullable — {hr, power}, each {high: [bpm|W], seconds: [s]} or null (below)
   raw_data            jsonb — full parsed payload, safety net for unmapped fields
   imported_at
 
@@ -101,7 +102,8 @@ parsed, and the grouping tray below it.
 
 ### Import flow (multisport)
 
-1. Parse `session`, `lap`, `record` and `device_info` in one pass with `fitdecode`.
+1. Parse `session`, `lap`, `record`, `device_info` and `time_in_zone` in one pass with
+   `fitdecode`.
 2. Map the sessions to `swim, t1, bike, t2, run` by order and sport field. Check the
    sequence instead of trusting it: swim, bike, run in that order, each transition
    present or missing. A file that doesn't match is rejected with a clear error and
@@ -120,6 +122,23 @@ parsed, and the grouping tray below it.
    [classification](classification.md#rules) and [weather](weather.md#rules). If
    enrichment fails, log it and still return the race; an enrichment failure never fails the import.
 7. Return the race id so the page can link straight to it.
+
+### Time in zone
+
+Garmin writes a `time_in_zone` message per session and per lap: the watch's zone table
+(`hr_zone_high_boundary`, `power_zone_high_boundary`) and the seconds spent in each zone.
+The session-level messages are kept on `recorded_activity.time_in_zone`; lap-level ones
+are ignored.
+
+- A message refers to its session by **position in the file** (`reference_index`), so the
+  mapping is made before the sessions are sorted by start time.
+- `high` is each zone's upper bound; zone 0 is everything below zone 1. `seconds` has one
+  entry per zone, or one more (an open-ended top zone). Arrays that don't line up, or a
+  message with no time in any zone, are stored as null: unknown, not a guess.
+- **Nothing is computed from records** when the message is absent (Apple writes none).
+  The zone table is the athlete's watch setting, and inventing one from the sport or a
+  formula would be Trap 2 again.
+- Rows imported before this column existed are null until `cli reimport`.
 
 ### Deduplication
 
@@ -149,3 +168,5 @@ Against the synthetic fixtures ([fit-files](../reference/fit-files.md#testing-wi
 - Uploading the same file twice gives one `upload` row and a "duplicate" result.
 - A file with the wrong session sequence writes nothing.
 - A file without a recorded T2 (`missing_t2.fit`) gets a derived T2 from the gap.
+- Garmin sessions carry the zone seconds listed in the fixture README (HR everywhere, power
+  on the bike); the lap-level message is ignored; Apple sessions have `time_in_zone = null`.
