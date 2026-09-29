@@ -67,6 +67,7 @@ async function main() {
     <section class="section" id="weather-section"></section>
     <section class="section" id="fueling-section"></section>
     <section class="section" id="gear-section"></section>
+    <section class="section" id="photos-section"></section>
     <section class="section" id="recordings-section"></section>
     <section class="section danger-zone" id="danger-section"></section>
   `;
@@ -101,6 +102,7 @@ async function main() {
   wireWeather();
   wireFueling();
   wireGear();
+  wirePhotos();
   wireRecordings();
   wireDanger();
 
@@ -112,6 +114,7 @@ async function main() {
   renderWeather();
   renderFueling();
   renderGear();
+  renderPhotos();
   renderRecordings();
 }
 
@@ -182,9 +185,14 @@ function renderMeta() {
       `<input id="m-lng" type="number" step="any" min="-180" max="180" data-field="location_lng"
         value="${race.location_lng ?? ""}">`)}
     <div class="field">
-      <label for="m-notes">Notes</label>
-      <textarea id="m-notes" data-field="notes">${esc(race.notes ?? "")}</textarea>
+      <label for="m-notes">Race report</label>
+      <textarea id="m-notes" data-field="notes" aria-describedby="m-notes-help">${esc(race.notes ?? "")}</textarea>
       <span class="field-status" id="m-notes-status"></span>
+      <p class="small muted" id="m-notes-help">Markdown: <code># heading</code>,
+        <code>- list</code>, <code>&gt; quote</code>, <code>**bold**</code>, <code>*italic*</code>,
+        <code>[link](https://…)</code>. Anything else is shown as typed.</p>
+      ${race.notes_html ? `<details><summary>Preview</summary>
+        <div class="prose card">${race.notes_html}</div></details>` : ""}
     </div>`;
 }
 
@@ -621,6 +629,114 @@ function wireGear() {
 }
 
 // --- recordings -------------------------------------------------------------------------
+
+// --- photos ---------------------------------------------------------------------------------
+
+function renderPhotos() {
+  const el = /** @type {HTMLElement} */ (document.getElementById("photos-section"));
+  /** @type {import("./types.js").Photo[]} */
+  const list = race.photos;
+  el.innerHTML = `<h2>Photos</h2>
+    <p class="small muted">JPEG, PNG or WebP. Location, camera and other metadata are removed
+      before anything is stored. The cover heads the timeline card and link previews.</p>
+    <p><label class="button" for="photo-input">Add photos</label>
+      <input id="photo-input" class="hidden" type="file" multiple
+        accept="image/jpeg,image/png,image/webp"></p>
+    <ul class="result-list" id="photo-results"></ul>
+    <ul class="photo-admin">
+      ${list.map((p, i) => `<li data-photo-id="${p.id}">
+        <img src="${esc(p.thumb_url)}" alt="" loading="lazy" width="${p.width}" height="${p.height}">
+        <div class="photo-admin-fields">
+          <label for="photo-${p.id}-caption">Caption</label>
+          <input id="photo-${p.id}-caption" data-photo-caption value="${esc(p.caption ?? "")}">
+          <span class="field-status" id="photo-${p.id}-status"></span>
+          <div class="photo-admin-actions">
+            ${p.is_cover ? `<span class="badge">cover</span>`
+              : `<button type="button" data-photo-cover>Make cover</button>`}
+            <button type="button" data-photo-move="-1" ${i === 0 ? "disabled" : ""}
+              aria-label="Move earlier">&uarr;</button>
+            <button type="button" data-photo-move="1" ${i === list.length - 1 ? "disabled" : ""}
+              aria-label="Move later">&darr;</button>
+            <button type="button" class="link" data-photo-delete>Delete</button>
+          </div>
+        </div>
+      </li>`).join("")}
+    </ul>`;
+}
+
+async function reloadPhotos() {
+  race = await api(`/races/${raceId}`);
+  renderPhotos();
+  renderCompleteness();
+}
+
+function wirePhotos() {
+  const el = /** @type {HTMLElement} */ (document.getElementById("photos-section"));
+  el.addEventListener("change", async (e) => {
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    if (input.id !== "photo-input" || !input.files?.length) return;
+    const form = new FormData();
+    for (const file of input.files) form.append("files", file);
+    const results = /** @type {HTMLElement} */ (document.getElementById("photo-results"));
+    results.innerHTML = `<li class="result-line">Uploading…</li>`;
+    try {
+      /** @type {{filename: string|null, result: string, message: string}[]} */
+      const outcomes = await api(`/races/${raceId}/photos`, { method: "POST", form });
+      await reloadPhotos();
+      const again = /** @type {HTMLElement} */ (document.getElementById("photo-results"));
+      again.innerHTML = outcomes.filter((o) => o.result !== "added").map((o) =>
+        `<li class="result-line ${esc(o.result)}">${esc(o.filename ?? "")}: ${esc(o.message)}</li>`).join("");
+    } catch (err) {
+      results.innerHTML = `<li class="result-line failed">${esc(err instanceof Error ? err.message : err)}</li>`;
+    }
+  });
+  el.addEventListener("focusout", async (e) => {
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    if (!input.hasAttribute?.("data-photo-caption")) return;
+    const id = input.closest("[data-photo-id]")?.getAttribute("data-photo-id");
+    const statusEl = document.getElementById(`photo-${id}-status`);
+    const current = race.photos.find((/** @type {any} */ p) => String(p.id) === id);
+    const value = input.value.trim() || null;
+    if (current && current.caption === value) return;
+    setStatus(statusEl, "Saving…", false);
+    try {
+      await api(`/races/${raceId}/photos/${id}`, { method: "PATCH", body: { caption: value } });
+      if (current) current.caption = value;
+      setStatus(statusEl, "Saved", false);
+    } catch (err) {
+      setStatus(statusEl, err instanceof Error ? err.message : String(err), true);
+    }
+  });
+  el.addEventListener("click", async (e) => {
+    const button = /** @type {HTMLElement} */ (e.target).closest("button");
+    const item = button?.closest("[data-photo-id]");
+    if (!button || !item) return;
+    const id = item.getAttribute("data-photo-id");
+    const statusEl = document.getElementById(`photo-${id}-status`);
+    try {
+      if (button.hasAttribute("data-photo-cover")) {
+        await api(`/races/${raceId}/photos/${id}`, { method: "PATCH", body: { is_cover: true } });
+      } else if (button.hasAttribute("data-photo-move")) {
+        // Positions are rewritten for the whole list, so the order is always 0..n-1.
+        const ids = race.photos.map((/** @type {any} */ p) => String(p.id));
+        const from = ids.indexOf(/** @type {string} */ (id));
+        const to = from + Number(button.getAttribute("data-photo-move"));
+        [ids[from], ids[to]] = [ids[to], ids[from]];
+        for (const [position, photoId] of ids.entries()) {
+          await api(`/races/${raceId}/photos/${photoId}`, { method: "PATCH", body: { position } });
+        }
+      } else if (button.hasAttribute("data-photo-delete")) {
+        if (!confirm("Delete this photo?")) return;
+        await api(`/races/${raceId}/photos/${id}`, { method: "DELETE" });
+      } else {
+        return;
+      }
+      await reloadPhotos();
+    } catch (err) {
+      setStatus(statusEl, err instanceof Error ? err.message : String(err), true);
+    }
+  });
+}
 
 function renderRecordings() {
   const el = /** @type {HTMLElement} */ (document.getElementById("recordings-section"));

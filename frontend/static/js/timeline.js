@@ -111,7 +111,9 @@ function card(race, who) {
   return `
     <div class="timeline-row">
       <span class="dot-marker"></span>
-      <a class="card race-card" href="/races/${race.id}">
+      <a class="card race-card${race.cover_photo ? " has-photo" : ""}" href="/races/${race.id}">
+        ${race.cover_photo ? `<img class="race-card-photo" src="${esc(race.cover_photo.thumb_url)}"
+          loading="lazy" alt="" width="${race.cover_photo.width}" height="${race.cover_photo.height}">` : ""}
         <div class="race-card-head">
           <span class="race-name">${esc(race.name)}</span>
           ${race.category ? `<span class="badge">${esc(race.category.label)}</span>` : ""}

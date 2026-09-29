@@ -64,6 +64,10 @@ No CORS settings are needed: the frontend and the API share an origin.
 - Original FIT files are kept verbatim on the `uploads` volume, keyed by upload id. They're
   the only way to re-import the whole collection when the parser improves
   (`cli reimport`).
+- Race photos live on the same volume under `photos/`: two re-encoded JPEGs per photo
+  (full ≤ 2400 px and a thumbnail), typically 0.5–1 MB together. The originals aren't
+  kept ([photos](../features/photos.md#stripping-metadata)). Budget for them when sizing
+  the volume and the backup target; 500 photos is roughly half a gigabyte.
 - The app rejects oversized files and files that aren't FIT before parsing. Caddy's body
   limit must be raised explicitly to match.
 
@@ -77,12 +81,28 @@ A race history has no other source once the watch data ages out, so back it up.
   server already runs picks it up.
 - Cron: `15 3 * * * cd /opt/race-app && ./scripts/backup.sh`
 - Restore: `pg_restore --clean --if-exists` from a dump; copy `uploads/` back onto the volume.
+  That includes `uploads/photos/`: the database rows without their files show as broken
+  images.
 - Local instances: the same script works; point `BACKUP_DIR` somewhere that gets backed up.
 
 ## Updating
 
-`git pull && docker compose ... up -d --build`. No CI/CD is needed to deploy. CI for tests
-and lint on pull requests is worth adding once the repository is public.
+`git pull && docker compose ... up -d --build`. No CD is needed to deploy.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`:
+
+- **backend**: `uv sync --frozen`, `ruff check`, `ruff format --check` and `pytest`
+  against a `postgres:16` service container, the same database the app always runs on.
+- **frontend**: `node --check` on every ES module. There is no build and no
+  `package.json`, so this only proves each file parses.
+
+The test suite also asserts the repository conventions that are cheap to check
+mechanically (`tests/test_conventions.py`): every JS module starts with `// @ts-check`,
+no raw hex colours outside `tokens.css`, and no FIT files outside the synthetic fixtures.
+Tests that need your private recordings skip in CI, since `fixtures/private/` is
+gitignored.
 
 ### Coming from v1
 

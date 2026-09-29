@@ -8,6 +8,7 @@ dependencies = [
     "argon2-cffi>=25.1",
     "fastapi>=0.115",
     "fitdecode>=0.11",
+    "pillow>=12.3.0",
     "psycopg[binary]>=3.3",
     "pydantic-settings>=2.15",
     "python-multipart>=0.0.20",

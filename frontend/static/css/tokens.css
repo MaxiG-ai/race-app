@@ -1,6 +1,7 @@
 /* Design tokens (docs/design/visual-system.md). The only file with raw colour values.
-   Sport colours were checked for legibility; re-run the check if any value changes. */
+   Colours are checked for legibility by backend/tests/test_palette.py, in both themes. */
 :root {
+  color-scheme: light dark;
   --bg: #FAFAF8;
   --surface: #FFFFFF;
   --ink: #1C2321;
@@ -25,4 +26,27 @@
   --radius: 6px;
   --gutter: 16px;
   --measure: 46rem;
+}
+
+/* Dark theme: the same tokens, re-checked on the dark surface (test_palette.py). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121517;
+    --surface: #1A1F21;
+    --ink: #E7E5DF;
+    --ink-muted: #A3A9A6;
+    --hairline: #2E3437;
+
+    --swim: #4CBDB0;
+    --bike: #E6C35C;
+    --run: #C4553F;
+    --transition: #555C5B;
+
+    --faster: #4CBDB0;
+    --slower: #C4553F;
+    --neutral: #92928C;
+
+    --focus: #E7E5DF;
+    --danger: #E07A62;
+  }
 }

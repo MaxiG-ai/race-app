@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from app.models.classification import RaceCategory
     from app.models.fueling import RaceFueling
     from app.models.imports import RecordedActivity
+    from app.models.photos import RacePhoto
 
 
 class Race(Base):
@@ -60,6 +61,12 @@ class Race(Base):
         back_populates="race", cascade="all, delete-orphan", order_by="RecordedActivity.start_time"
     )
     fueling: Mapped[list[RaceFueling]] = relationship(cascade="all, delete-orphan")
+    photos: Mapped[list[RacePhoto]] = relationship(
+        cascade="all, delete-orphan", order_by="(RacePhoto.position, RacePhoto.id)"
+    )
+
+    def cover_photo(self) -> RacePhoto | None:
+        return next((p for p in self.photos if p.is_cover), None)
 
     def primary_activities(self) -> dict[str, RecordedActivity]:
         """segment -> the primary recording; the only rows a visitor ever sees."""

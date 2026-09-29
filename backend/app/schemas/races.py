@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.models.enums import ClassificationSource, Segment
 from app.schemas.common import Model, Patch, Seconds
+from app.schemas.photos import PhotoOut
 
 
 class CategoryRef(Model):
@@ -54,6 +55,16 @@ class GearName(Model):
     kind: str
 
 
+class ZoneSet(BaseModel):
+    high: list[int]  # upper bound of each zone (bpm or W); zone 0 is below zone 1
+    seconds: list[int]  # may have one more entry than `high`: the open-ended top zone
+
+
+class TimeInZone(BaseModel):
+    hr: ZoneSet | None
+    power: ZoneSet | None
+
+
 class SegmentPublic(Model):
     """The primary recording of one segment."""
 
@@ -72,6 +83,7 @@ class SegmentPublic(Model):
     avg_cadence: int | None
     lap_count: int
     bounds: list[float] | None  # [n, s, e, w]
+    time_in_zone: TimeInZone | None  # only from devices that record it
     gear: list[GearName]
 
 
@@ -106,12 +118,14 @@ class RaceDetailPublic(BaseModel):
     location_lat: float | None
     location_lng: float | None
     notes: str | None
+    notes_html: str | None  # the race report, rendered from the Markdown subset
     is_public: bool
     category: CategoryRef | None
     weather: Weather
     official_result: OfficialResultOut | None
     segments: list[SegmentPublic]
     fueling: list[FuelingOut]
+    photos: list[PhotoOut]
 
 
 class Classification(BaseModel):
@@ -142,6 +156,7 @@ class RaceListItem(BaseModel):
     times_source: str | None  # "official" | "recorded": what the segment bar uses
     segment_times: dict[Segment, int | None]
     derived_segments: list[Segment]
+    cover_photo: PhotoOut | None
 
 
 class RaceList(BaseModel):

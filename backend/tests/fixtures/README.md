@@ -47,6 +47,12 @@ Reproduces: bike power + normalized power (Trap 2); 4 swim laps (Trap 7); smart 
 - Run: no `power` field anywhere (Trap 2). Records sample on a repeating 3 s/5 s/3 s/5 s pattern (~4 s average) instead of a fixed interval.
 - Every record in the file (all 5 sessions plus the orphan) carries a `temperature` field, and every session with records after T1 also carries `avg_temperature` (Trap 8).
 - Orphan record (Trap 4): the bike session's derived end is start_time + total_elapsed_time = 2026-08-15T07:26:30Z + 1205.9s = 2026-08-15T07:46:35.900Z. T2 starts at 2026-08-15T07:46:37Z, 1.1 s later. One record sits at 2026-08-15T07:46:36Z, inside that gap, matching no session window. It must be counted as an orphan, not silently dropped or assigned.
+- `time_in_zone`: one message per session (`reference_mesg` = `session`, `reference_index` = the session's position in the file), written after the `activity` message, plus one for lap 0 (`reference_mesg` = `lap`, 999 s in every zone) that the importer must ignore. HR zone high boundaries [100, 120, 135, 150, 165, 185] bpm (zone 0 .. zone 5); the bike also carries power zones, high boundaries [140, 200, 240, 280, 320, 380, 2000] W, FTP 265 W. Seconds per zone (whole seconds, computed from each session's records):
+  - swim: HR [0, 140, 840, 520, 0, 0]
+  - t1: HR [10, 80, 0, 0, 0, 0]
+  - bike: HR [0, 0, 246, 488, 472, 0]; power [0, 182, 688, 336, 0, 0, 0]
+  - t2: HR [0, 70, 0, 0, 0, 0]
+  - run: HR [0, 0, 259, 1109, 1104, 331]
 
 ## `overlap_boundary.fit`
 

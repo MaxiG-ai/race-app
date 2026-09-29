@@ -5,6 +5,7 @@ from app.models.classification import RaceCategory
 from app.models.fueling import RaceFueling
 from app.models.gear import ActivityGear, Gear, GearDevice
 from app.models.imports import LapSplit, RecordedActivity, Upload
+from app.models.photos import RacePhoto
 from app.models.race import OfficialResult, Race
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "Race",
     "RaceCategory",
     "RaceFueling",
+    "RacePhoto",
     "RecordedActivity",
     "SiteSettings",
     "Upload",

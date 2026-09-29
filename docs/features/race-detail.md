@@ -45,8 +45,13 @@ hundred points per segment (`services/geo.py`).
    what was recorded, not on the sport ([Trap 2](../reference/fit-files.md#trap-2),
    [Trap 7](../reference/fit-files.md#trap-7)): a run may have pace/HR/power, a bike
    6–8 coarse 5 km points, and a one-lap swim is a summary tile rather than a line.
+   Below it, **time in zones** (HR, and power where recorded) when the device wrote them
+   ([import](import.md#time-in-zone)): a table with a neutral bar per zone, the time and
+   the share as text.
 5. **Conditions & fueling**: weather, carbs per segment, products, gear names.
-6. **Notes**: the race report.
+6. **Race report**: `notes_html`, the Markdown subset rendered by the backend
+   ([race reports](races-and-results.md#race-reports)).
+7. **Photos**: the gallery, when there are any ([photos](photos.md#ui)).
 
 ## Rules
 
@@ -65,6 +70,7 @@ hundred points per segment (`services/geo.py`).
   notes without errors.
 - The Apple fixture's swim renders as a summary tile; the Garmin fixture's swim renders as
   a 4-point line.
+- The Garmin fixture's run shows its HR zones; the Apple fixture shows no zone table.
 - `/track` for a visitor is always simplified, whatever `precision` is requested.
 - `/races/{id}` for a public race has its name in `og:title`; a hidden race and a
   nonexistent id return byte-identical generic shells.

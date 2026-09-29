@@ -37,7 +37,14 @@
  * @property {number|null} avg_cadence
  * @property {number} lap_count
  * @property {number[]|null} bounds  [n, s, e, w]
+ * @property {{hr: ZoneSet|null, power: ZoneSet|null}|null} time_in_zone  device-recorded only
  * @property {{id: number, name: string, kind: string}[]} gear
+ */
+
+/**
+ * @typedef {Object} ZoneSet
+ * @property {number[]} high  upper bound of each zone; zone 0 is below zone 1
+ * @property {number[]} seconds  one per zone, or one more: the open-ended top zone
  */
 
 /**
@@ -63,11 +70,13 @@
  * @property {number|null} location_lat
  * @property {number|null} location_lng
  * @property {string|null} notes
+ * @property {string|null} notes_html  race report, rendered by the backend from escaped text
  * @property {boolean} is_public
  * @property {CategoryRef|null} category
  * @property {{temp_c: number|null, humidity_pct: number|null, conditions: string|null}} weather
  * @property {OfficialResult|null} official_result
  * @property {SegmentOut[]} segments
+ * @property {Photo[]} photos
  * @property {Fueling[]} fueling
  * @property {string|null} [published_at]
  * @property {string|null} [weather_fetched_at]
@@ -90,6 +99,7 @@
  * @property {"official"|"recorded"|null} times_source
  * @property {Record<Segment, number|null>} segment_times
  * @property {Segment[]} derived_segments
+ * @property {Photo|null} cover_photo
  */
 
 /**
@@ -145,3 +155,33 @@
 /** @typedef {{site_title: string, athlete_name: string|null, about: string|null}} Site */
 
 export {};
+
+/**
+ * @typedef {Object} SportTotals  the primary recording's totals; pace is derived
+ * @property {number|null} distance_m
+ * @property {number} elapsed_time
+ * @property {number|null} avg_hr
+ * @property {number|null} avg_power
+ */
+
+/**
+ * @typedef {Object} TrendRace  one row of /api/trends
+ * @property {number} id
+ * @property {string} name
+ * @property {string} date
+ * @property {CategoryRef|null} category
+ * @property {number|null} temp_c
+ * @property {number|null} humidity_pct
+ * @property {Record<string, SportTotals|null>} sports  swim, bike, run
+ */
+
+/**
+ * @typedef {Object} Photo  re-encoded copies only; EXIF never reaches the server's disk
+ * @property {number} id
+ * @property {string|null} caption
+ * @property {number} width
+ * @property {number} height
+ * @property {boolean} is_cover
+ * @property {string} thumb_url
+ * @property {string} full_url
+ */

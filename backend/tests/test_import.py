@@ -67,6 +67,44 @@ def test_device_temperature_is_stored():  # Trap 8
     assert by_segment("garmin_multisport.fit")["bike"].avg_temp_c is not None
 
 
+def test_time_in_zone_comes_from_the_device_only():
+    garmin = by_segment("garmin_multisport.fit")
+    high = [100, 120, 135, 150, 165, 185]
+    assert garmin["swim"].time_in_zone == {
+        "hr": {"high": high, "seconds": [0, 140, 840, 520, 0, 0]},
+        "power": None,
+    }
+    bike = garmin["bike"].time_in_zone
+    assert bike["hr"]["seconds"] == [0, 0, 246, 488, 472, 0]
+    assert bike["power"] == {
+        "high": [140, 200, 240, 280, 320, 380, 2000],
+        "seconds": [0, 182, 688, 336, 0, 0, 0],
+    }
+    # the lap-level message (999 s everywhere) is not mistaken for a session's
+    assert all(999 not in (s.time_in_zone or {})["hr"]["seconds"] for s in garmin.values())
+    # Apple writes no time_in_zone; nothing is computed from records instead (Trap 2)
+    assert all(s.time_in_zone is None for s in by_segment("apple_multisport.fit").values())
+
+
+def test_time_in_zone_shape_checks():
+    from app.services.fit_import import time_in_zone
+
+    assert time_in_zone(None) is None
+    both = {"hr_zone_high_boundary": (100, 150), "time_in_hr_zone": (10.4, 20.6, 5.0)}
+    assert time_in_zone(both) == {"hr": {"high": [100, 150], "seconds": [10, 21, 5]}, "power": None}
+    # misaligned arrays or no time at all are unknown, not a guess
+    assert time_in_zone({"hr_zone_high_boundary": (1,), "time_in_hr_zone": (1, 2, 3)}) is None
+    assert time_in_zone({"hr_zone_high_boundary": (1, 2), "time_in_hr_zone": (0, 0)}) is None
+
+
+def test_time_in_zone_reaches_the_race_detail(anon, owner, public_mode):
+    race_id = upload(owner, "garmin_multisport.fit")[0]["race_id"]
+    owner.patch(f"/api/races/{race_id}/visibility", json={"is_public": True})
+    segments = {s["segment"]: s for s in anon.get(f"/api/races/{race_id}").json()["segments"]}
+    assert segments["run"]["time_in_zone"]["hr"]["seconds"] == [0, 0, 259, 1109, 1104, 331]
+    assert segments["run"]["time_in_zone"]["power"] is None
+
+
 def test_swim_has_no_altitude():  # Trap 9
     apple = by_segment("apple_multisport.fit")
     assert all(p["elevation"] is None for p in apple["swim"].gps_track)

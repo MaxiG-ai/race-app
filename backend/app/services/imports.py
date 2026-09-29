@@ -371,6 +371,7 @@ def _fill(activity: RecordedActivity, segment: Segment, s: ParsedSession, f: Par
     activity.avg_cadence = s.avg_cadence
     activity.avg_temp_c = s.avg_temp_c
     activity.rpe_estimated = s.rpe_estimated
+    activity.time_in_zone = s.time_in_zone
     activity.bounds_n, activity.bounds_s, activity.bounds_e, activity.bounds_w = s.bounds or (
         None,
         None,

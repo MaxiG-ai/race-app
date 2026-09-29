@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from app.access import DB, CurrentViewer, Viewer, owner_router, reader_router, visible_race
 from app.models import LapSplit, OfficialResult, Race, RecordedActivity, Upload
 from app.models.enums import SEGMENTS, ClassificationSource, Segment, UploadStatus
+from app.routers.photos import photo_out
 from app.schemas.races import (
     CategoryRef,
     Classification,
@@ -25,7 +26,7 @@ from app.schemas.races import (
     TrackSegment,
     Weather,
 )
-from app.services import classify, gear, geo, results
+from app.services import classify, gear, geo, markdown, photos, results
 
 read = reader_router()
 write = owner_router()
@@ -60,6 +61,7 @@ def _segment_fields(a: RecordedActivity) -> dict:
         "avg_cadence": a.avg_cadence,
         "lap_count": len(a.laps),
         "bounds": _bounds(a),
+        "time_in_zone": a.time_in_zone,
         "gear": [GearName.model_validate(link.gear) for link in a.gear_links],
     }
 
@@ -89,6 +91,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
         "location_lat": race.location_lat,
         "location_lng": race.location_lng,
         "notes": race.notes,
+        "notes_html": markdown.render(race.notes),
         "is_public": race.is_public,
         "category": category_ref(race.category),
         "weather": Weather(
@@ -102,6 +105,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
             FuelingOut.model_validate(f)
             for f in sorted(race.fueling, key=lambda f: SEGMENTS.index(f.segment))
         ],
+        "photos": [photo_out(p) for p in race.photos],
     }
     if not viewer.is_owner:
         return RaceDetailPublic(**public)
@@ -219,8 +223,11 @@ def delete_race(race_id: int, db: DB):
         .where(Upload.race_id == race.id)
         .values(race_id=None, status=UploadStatus.PARSED)
     )
+    photo_ids = [p.id for p in race.photos]
     db.delete(race)
     db.commit()
+    for photo_id in photo_ids:
+        photos.remove(photo_id)
 
 
 @write.put("/races/{race_id}/official-result", response_model=RaceDetailOwner)

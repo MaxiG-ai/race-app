@@ -77,6 +77,8 @@ class RecordedActivity(Base):
     bounds_w: Mapped[float | None]
     gps_track: Mapped[list[Any] | None]
     progress_series: Mapped[list[Any] | None]
+    # {hr, power}: {high: [upper bound per zone], seconds: [whole seconds per zone]}
+    time_in_zone: Mapped[dict[str, Any] | None]
     raw_data: Mapped[dict[str, Any] | None]
     imported_at: Mapped[datetime] = mapped_column(default=utcnow)
 

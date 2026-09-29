@@ -1,0 +1,8 @@
+/* Trends page. Colours only via tokens.css. */
+
+.trends-filter { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-bottom: 0.5rem; }
+.trends-filter label { margin: 0; }
+.trends-filter select { width: auto; }
+.trend-chart h3 { margin-top: 1.25rem; display: flex; align-items: center; gap: 0.375rem; }
+.trend-chart .chart { aspect-ratio: 16 / 7; }

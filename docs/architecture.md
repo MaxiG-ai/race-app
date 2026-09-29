@@ -20,8 +20,8 @@
   proxy in front adds TLS and nothing else ([deployment](operations/deployment.md)).
 - **The frontend is files, not a build.** HTML pages load ES modules straight from
   `/static/js/`. What is in the repository is exactly what the browser gets.
-- **Public pages are served through a thin shell.** `/`, `/races/{id}` and `/compare`
-  are routes on the backend that return the page's static HTML with `<title>` and
+- **Public pages are served through a thin shell.** `/`, `/races/{id}`, `/compare` and
+  `/trends` are routes on the backend that return the page's static HTML with `<title>` and
   Open Graph tags filled in, so shared links get a proper preview
   ([Link previews](#link-previews)). Everything else on the page is still rendered by JS
   from the JSON API.
@@ -65,11 +65,14 @@ are fiddly to write by hand.
 | `argon2-cffi` | password hashing for the owner login |
 | `pydantic-settings` | env-driven config |
 | `python-multipart` | FastAPI needs it to accept multipart FIT uploads |
+| `Pillow` | decoding, orientation, resizing and re-encoding race photos ([photos](features/photos.md#stripping-metadata)). JPEG/PNG/WebP decoding and resampling can't reasonably be written by hand, and re-encoding from pixels is what makes the EXIF stripping trustworthy |
 | `timezonefinder` | coordinate → timezone, offline, for the local race date ([Trap 11](reference/fit-files.md#trap-11)) and the weather hour. A lookup service would make every import depend on the network |
 
 Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
 `secrets` + a `session` table instead of a JWT library, `hashlib` for content hashes,
-`zoneinfo` for local race dates.
+`zoneinfo` for local race dates, `xml.etree` for the Atom feed, and a hand-written
+Markdown subset for race reports (a library would still need a sanitiser after it; see
+[race reports](features/races-and-results.md#race-reports)).
 
 Dev-only: `pytest`, `ruff`, `httpx` (FastAPI's test client), `fit-tool` (writes the
 synthetic FIT fixtures; [fit-files](reference/fit-files.md#testing-without-the-originals)).
@@ -90,8 +93,10 @@ race-app/
       schemas/          Pydantic models; owner and public shapes side by side
       routers/          one module per feature; read and owner-only write routers
       pages.py          page shells with <title> / Open Graph tags
+      feed.py           /feed.xml, the Atom feed of public races
       services/         fit_import (bytes → dataclasses), imports (uploads, grouping,
-                        primaries), results, classify, gear, weather, comparison, geo
+                        primaries), results, classify, gear, weather, comparison, geo,
+                        markdown (the race-report subset), photos (strip and re-encode)
       migrations/       Alembic
       cli.py            create-owner, set-password, reimport
     tests/
@@ -101,6 +106,7 @@ race-app/
     index.html          timeline            served at /
     race.html           race detail         served at /races/{id}
     compare.html        comparison          served at /compare?a=&b=
+    trends.html         trends              served at /trends
     login.html
     admin/              import, race-edit, gear, site — owner only, served at /admin/<name>
     static/
@@ -112,6 +118,7 @@ race-app/
   docker-compose.yml    app + db, local and self-hosted
   docker-compose.public.yml, docker-compose.dev.yml   Caddy in front; bind-mounted source
   Caddyfile             only for the public deployment
+  .github/workflows/    CI: lint and tests on pull requests
 ```
 
 ## Conventions
@@ -152,8 +159,9 @@ be in the HTML the server sends.
   site shell, exactly the same as a nonexistent id, so the preview never leaks a hidden
   race's name. In private mode every shell is generic.
 - Compare pages preview as "A vs B" only when both races are public.
-- No `og:image` in the first version. A rendered course thumbnail is in the
-  [backlog](backlog.md).
+- A public race with a cover photo gets `og:image` (plus its width and height) pointing at
+  the full-size photo ([photos](features/photos.md)). Races without photos have no image;
+  a rendered course thumbnail is in the [backlog](backlog.md).
 
 ## Open questions
 

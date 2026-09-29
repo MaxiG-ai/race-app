@@ -45,6 +45,7 @@ def _shell(
     description: str | None = None,
     url: str | None = None,
     og_type: str = "website",
+    image: tuple[str, int, int] | None = None,
 ) -> str:
     title = title or site_name
     tags = [
@@ -57,6 +58,19 @@ def _shell(
     if description:
         tags.insert(1, f'<meta name="description" content="{escape(description)}">')
         tags.append(f'<meta property="og:description" content="{escape(description)}">')
+    if image:
+        src, width, height = image
+        tags += [
+            f'<meta property="og:image" content="{escape(src)}">',
+            f'<meta property="og:image:width" content="{width}">',
+            f'<meta property="og:image:height" content="{height}">',
+            '<meta name="twitter:card" content="summary_large_image">',
+        ]
+    if get_settings().site_mode == "public":
+        tags.append(
+            '<link rel="alternate" type="application/atom+xml" '
+            f'title="{escape(site_name)}" href="/feed.xml">'
+        )
     return _file(file).replace(PLACEHOLDER, "\n    ".join(tags), 1)
 
 
@@ -112,6 +126,10 @@ def race_page(race_id: int, request: Request, db: DB, viewer: CurrentViewer):
     if race is None:
         return _shell("race.html", site.site_title, str(request.base_url))
     title = race.name + (f" — {race.category.label}" if race.category else "")
+    image = None
+    if cover := race.cover_photo():
+        src = f"{request.base_url}api/races/{race.id}/photos/{cover.id}/full"
+        image = (src, cover.width, cover.height)
     return _shell(
         "race.html",
         site.site_title,
@@ -120,6 +138,7 @@ def race_page(race_id: int, request: Request, db: DB, viewer: CurrentViewer):
         race_description(race),
         str(request.url),
         "article",
+        image,
     )
 
 
@@ -137,6 +156,14 @@ def compare_page(
             "compare.html", site.site_title, str(request.base_url), title, url=str(request.url)
         )
     return _shell("compare.html", site.site_title, str(request.base_url))
+
+
+@router.get("/trends", response_class=HTMLResponse)
+def trends_page(request: Request, db: DB, viewer: CurrentViewer):
+    if redirect := _gate(request, viewer):
+        return redirect
+    site = site_settings(db)
+    return _shell("trends.html", site.site_title, str(request.base_url), "Trends")
 
 
 @router.get("/login", response_class=HTMLResponse)

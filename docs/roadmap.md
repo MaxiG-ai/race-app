@@ -57,6 +57,31 @@ That's the first release worth putting on a domain.
 
 - [x] [comparison](features/comparison.md): `progress_series`, alignment, gap chart, diffs.
 
+## Phase 6 — the public site, polished
+
+- [x] Race reports in Markdown: a tiny hand-written, escape-first subset
+      ([races-and-results](features/races-and-results.md#race-reports)).
+- [x] Atom feed of public races at `/feed.xml` ([timeline](features/timeline.md#feed)).
+- [x] CI: lint and tests on pull requests, plus the mechanical convention checks
+      ([deployment](operations/deployment.md#ci)).
+
+## Phase 7 — analysis across races
+
+- [x] [trends](features/trends.md): pacing per sport over time, weather against
+      performance.
+- [x] Garmin `time_in_zone` promoted from the FIT file into the model and shown on the
+      race page ([import](features/import.md), [race-detail](features/race-detail.md)).
+
+## Phase 8 — dark mode
+
+- [x] One `prefers-color-scheme` token block, the palette re-checked on the dark surface
+      ([visual-system](design/visual-system.md#theme)).
+
+## Phase 9 — race photos
+
+- [x] [photos](features/photos.md): upload, EXIF stripping, thumbnails, the cover photo
+      on the timeline card and as the link preview's `og:image`.
+
 ## After that
 
 [backlog](backlog.md), [strava](features/strava.md).

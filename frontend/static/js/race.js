@@ -46,6 +46,7 @@ async function main_() {
   renderSplits();
   renderConditions();
   renderNotes();
+  renderPhotos();
   renderRecordings();
 
   // Track and laps load independently; a failure in one shouldn't blank the page.
@@ -67,6 +68,7 @@ function skeleton() {
     </section>
     <section id="race-conditions"></section>
     <section id="race-notes"></section>
+    <section id="race-photos"></section>
     <section id="race-recordings"></section>
   `;
 }
@@ -259,6 +261,7 @@ function renderPacingPanel() {
         <div><span class="muted small">HR</span><br><span class="tnum">${esc(hr ?? DASH)}</span></div>
         <div><span class="muted small">Power</span><br><span class="tnum">${esc(pw ?? DASH)}</span></div>
       </div>
+      ${zonesFor(sport)}
     `;
     return;
   }
@@ -291,6 +294,48 @@ function renderPacingPanel() {
     l.avg_hr ?? DASH, l.avg_power ?? DASH,
   ]);
   panel.insertAdjacentHTML("beforeend", tableFallback(`${SEGMENT_LABELS[sport]} laps`, cols, rows));
+  panel.insertAdjacentHTML("beforeend", zonesFor(sport));
+}
+
+/**
+ * Time in HR and power zones, as the device recorded them. Bars are plain divs with the
+ * numbers beside them, so nothing depends on the bar alone.
+ * @param {string} sport
+ */
+function zonesFor(sport) {
+  const seg = /** @type {import("./types.js").RaceDetail} */ (race).segments
+    .find((s) => s.segment === sport);
+  const tiz = seg?.time_in_zone;
+  if (!tiz) return "";
+  return [["Heart-rate zones", tiz.hr, "bpm"], ["Power zones", tiz.power, "W"]]
+    .filter(([, set]) => set)
+    .map(([title, set, unit]) => zoneTable(/** @type {string} */ (title),
+      /** @type {import("./types.js").ZoneSet} */ (set), /** @type {string} */ (unit)))
+    .join("");
+}
+
+/** @param {string} title @param {import("./types.js").ZoneSet} set @param {string} unit */
+function zoneTable(title, set, unit) {
+  const total = set.seconds.reduce((a, b) => a + b, 0);
+  const rows = set.seconds.map((seconds, i) => {
+    const range = i === 0 ? `≤ ${set.high[0]}`
+      : i < set.high.length ? `${set.high[i - 1] + 1}–${set.high[i]}`
+      : `> ${set.high[set.high.length - 1]}`;
+    const share = total ? (seconds / total) * 100 : 0;
+    return `<tr>
+      <td>Z${i}</td>
+      <td class="num tnum">${esc(range)} ${esc(unit)}</td>
+      <td class="zone-bar-cell"><span class="zone-bar" style="width: ${share.toFixed(1)}%"></span></td>
+      <td class="num tnum">${esc(duration(seconds))}</td>
+      <td class="num tnum">${esc(Math.round(share))} %</td>
+    </tr>`;
+  });
+  return `<h3 class="zones-title">${esc(title)}</h3>
+    <div class="table-wrap"><table class="zones">
+      <thead><tr><th>Zone</th><th class="num">Range</th><th><span class="sr-only">Share</span></th>
+        <th class="num">Time</th><th class="num">Share</th></tr></thead>
+      <tbody>${rows.join("")}</tbody>
+    </table></div>`;
 }
 
 function renderConditions() {
@@ -336,10 +381,28 @@ function renderConditions() {
 
 function renderNotes() {
   const r = /** @type {import("./types.js").RaceDetail} */ (race);
+  // notes_html is built by the backend's Markdown subset from escaped text only
+  // (services/markdown.py), so it is safe to insert as markup.
   document.getElementById("race-notes").innerHTML = `
-    <h2>Notes</h2>
-    <p class="notes-text">${r.notes ? esc(r.notes) : DASH}</p>
+    <h2>Race report</h2>
+    ${r.notes_html ? `<div class="prose">${r.notes_html}</div>` : `<p class="muted">${DASH}</p>`}
   `;
+}
+
+function renderPhotos() {
+  const r = /** @type {import("./types.js").RaceDetail} */ (race);
+  const section = /** @type {HTMLElement} */ (document.getElementById("race-photos"));
+  if (!r.photos.length) { section.innerHTML = ""; return; }
+  section.innerHTML = `
+    <h2>Photos</h2>
+    <ul class="gallery">
+      ${r.photos.map((p) => `<li><figure>
+        <a href="${esc(p.full_url)}"><img src="${esc(p.thumb_url)}" loading="lazy"
+          width="${p.width}" height="${p.height}"
+          alt="${esc(p.caption ?? `Photo from ${r.name}`)}"></a>
+        ${p.caption ? `<figcaption class="small muted">${esc(p.caption)}</figcaption>` : ""}
+      </figure></li>`).join("")}
+    </ul>`;
 }
 
 function renderRecordings() {
