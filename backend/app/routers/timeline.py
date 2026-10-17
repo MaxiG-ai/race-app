@@ -11,17 +11,18 @@ from app.models import Race, RecordedActivity
 from app.models.enums import SEGMENTS, SPORT_SEGMENTS
 from app.routers.photos import photo_out
 from app.routers.races import category_ref
-from app.schemas.races import RaceList, RaceListItem, Stats
+from app.schemas.races import RaceList, RaceListItem, RaceListItemOwner, RaceListOwner, Stats
 
 read = reader_router()
 
 
 def list_item(race: Race) -> RaceListItem:
-    """Official splits when all are known, recorded primary totals otherwise."""
+    """Official splits when all of the race type's are known, recorded primary totals
+    otherwise."""
     result = race.official_result
     primaries = race.primary_activities()
     official = {s: result.split(s) for s in SEGMENTS} if result else {}
-    if result and all(v is not None for v in official.values()):
+    if result and all(official[s] is not None for s in race.segments()):
         source, times, derived = "official", official, []
     elif primaries:
         source = "recorded"
@@ -34,6 +35,7 @@ def list_item(race: Race) -> RaceListItem:
         id=race.id,
         name=race.name,
         date=race.date,
+        race_type=race.race_type,
         location_name=race.location_name,
         is_public=race.is_public,
         category=category_ref(race.category),
@@ -45,7 +47,11 @@ def list_item(race: Race) -> RaceListItem:
     )
 
 
-@read.get("/races", response_model=RaceList)
+def owner_list_item(race: Race) -> RaceListItemOwner:
+    return RaceListItemOwner(**dict(list_item(race)), is_incomplete=race.is_incomplete)
+
+
+@read.get("/races", response_model=RaceListOwner | RaceList)
 def list_races(
     db: DB,
     viewer: CurrentViewer,
@@ -72,6 +78,8 @@ def list_races(
         .limit(limit)
         .offset(offset)
     )
+    if viewer.is_owner:
+        return RaceListOwner(items=[owner_list_item(r) for r in races], total=total)
     return RaceList(items=[list_item(r) for r in races], total=total)
 
 

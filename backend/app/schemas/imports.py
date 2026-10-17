@@ -1,49 +1,25 @@
-from datetime import datetime
-from typing import Any
-
 from pydantic import BaseModel
 
-from app.models.enums import Segment, Sport, UploadKind, UploadStatus
-from app.schemas.common import Model, Patch
-
-
-class UploadOut(Model):
-    id: int
-    filename: str | None
-    status: UploadStatus
-    kind: UploadKind | None
-    detected_sport: Sport | None
-    detected_start_time: datetime | None
-    detected_end_time: datetime | None
-    detected_distance_m: float | None
-    summary: dict[str, Any] | None
-    error: str | None
-    race_id: int | None
-    uploaded_at: datetime
-
-
-class Proposal(BaseModel):
-    upload_ids: list[int]
-    segments: dict[int, Segment]
-    ambiguous: bool
-
-
-class Tray(BaseModel):
-    uploads: list[UploadOut]
-    proposals: list[Proposal]
+from app.models.enums import Segment
+from app.schemas.common import Patch
+from app.schemas.races import RaceDetailOwner
 
 
 class Outcome(BaseModel):
     filename: str | None
-    result: str
+    result: str  # attached | needs_segment | duplicate | failed
     message: str
     upload_id: int | None
     race_id: int | None
 
 
-class GroupIn(BaseModel):
-    upload_ids: list[int]
-    segments: dict[int, Segment] = {}
+class ImportResult(BaseModel):
+    outcomes: list[Outcome]
+    race: RaceDetailOwner | None  # null when no race was made: nothing in the files fitted
+
+
+class AssignIn(BaseModel):
+    segments: dict[int, Segment]  # upload id -> the leg it fills
 
 
 class ActivityPatch(Patch):

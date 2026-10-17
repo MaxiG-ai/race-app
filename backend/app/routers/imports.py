@@ -1,82 +1,82 @@
-"""Uploads, the tray, grouping and recording switches (import.md, grouping.md)."""
+"""Files onto races, the leg picker, removing a file and recording switches (import.md,
+grouping.md). There is no tray: every file is dropped onto a race."""
 
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 
 from app.access import DB, Viewer, owner_router, visible_race
 from app.models import Gear, RecordedActivity, Upload
-from app.models.enums import UploadStatus
+from app.models.enums import RaceType
 from app.routers.races import owner_detail
-from app.schemas.imports import ActivityPatch, GroupIn, Outcome, Tray, UploadOut
+from app.schemas.imports import ActivityPatch, AssignIn, ImportResult, Outcome
 from app.schemas.races import RaceDetailOwner
-from app.services import classify, gear, imports
+from app.services import classify, gear, imports, results
 from app.services.fit_import import FitParseError
 
 write = owner_router()  # everything here is owner only, reads included
 
 
-@write.post("/uploads", response_model=list[Outcome])
-async def upload_files(files: list[UploadFile], db: DB):
-    outcomes = []
-    for file in files:
-        data = await file.read()
-        outcomes.append(Outcome(**vars(imports.receive(db, file.filename, data))))
-    return outcomes
+async def _read(files: list[UploadFile]) -> list[tuple[str | None, bytes]]:
+    return [(f.filename, await f.read()) for f in files]
 
 
-@write.get("/uploads", response_model=Tray)
-def tray(db: DB, status: UploadStatus | None = None):
-    query = select(Upload).order_by(Upload.detected_start_time.desc().nulls_last())
-    if status:
-        query = query.where(Upload.status == status)
-    uploads = list(db.scalars(query))
-    parsed = [u for u in uploads if u.status is UploadStatus.PARSED]
-    return Tray(
-        uploads=[UploadOut.model_validate(u) for u in uploads],
-        proposals=imports.propose(parsed),
+def _result(db: DB, race, outcomes) -> ImportResult:
+    return ImportResult(
+        outcomes=[Outcome(**vars(o)) for o in outcomes],
+        race=owner_detail(db, race.id) if race is not None else None,
     )
 
 
-@write.delete("/uploads/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_upload(upload_id: int, db: DB):
-    upload = db.get(Upload, upload_id)
-    if upload is None:
-        raise HTTPException(404, "Upload not found.")
-    if upload.race_id is not None:
-        raise HTTPException(409, "This upload belongs to a race; delete the race first.")
-    if upload.stored_path:
-        Path(upload.stored_path).unlink(missing_ok=True)
-    db.delete(upload)
-    db.commit()
+@write.post("/races/import", response_model=ImportResult)
+async def import_race(
+    files: list[UploadFile], db: DB, race_type: Annotated[RaceType | None, Form()] = None
+):
+    """A new race from files. Without `race_type`, the files decide (imports.infer_type)."""
+    race, outcomes = imports.receive(db, await _read(files), race_type=race_type)
+    return _result(db, race, outcomes)
+
+
+@write.post("/races/{race_id}/uploads", response_model=ImportResult)
+async def add_files(race_id: int, files: list[UploadFile], db: DB):
+    race = visible_race(db, Viewer(is_owner=True), race_id)
+    race, outcomes = imports.receive(db, await _read(files), race=race)
+    return _result(db, race, outcomes)
 
 
 def _grouping_errors(exc: Exception) -> HTTPException:
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
 
 
-@write.post("/races/group", response_model=RaceDetailOwner, status_code=201)
-def group(body: GroupIn, db: DB):
-    try:
-        race = imports.group(db, body.upload_ids, body.segments)
-    except (imports.GroupingError, FitParseError) as exc:
-        db.rollback()
-        raise _grouping_errors(exc) from exc
-    db.commit()
-    return owner_detail(db, race.id)
-
-
 @write.post("/races/{race_id}/attach", response_model=RaceDetailOwner)
-def attach(race_id: int, body: GroupIn, db: DB):
+def attach(race_id: int, body: AssignIn, db: DB):
+    """File the uploads that wait on the race for the owner to pick their leg."""
     race = visible_race(db, Viewer(is_owner=True), race_id)
     try:
-        imports.attach(db, race, body.upload_ids, body.segments)
+        imports.assign(db, race, body.segments)
     except (imports.GroupingError, FitParseError) as exc:
         db.rollback()
         raise _grouping_errors(exc) from exc
     db.commit()
     return owner_detail(db, race_id)
+
+
+@write.delete("/uploads/{upload_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_upload(upload_id: int, db: DB):
+    """Remove a file from its race, with every recording made from it."""
+    upload = db.get(Upload, upload_id)
+    if upload is None:
+        raise HTTPException(404, "Upload not found.")
+    try:
+        path = imports.remove_upload(db, upload)
+    except imports.GroupingError as exc:
+        db.rollback()
+        raise _grouping_errors(exc) from exc
+    db.commit()
+    if path:
+        Path(path).unlink(missing_ok=True)
 
 
 @write.patch("/activities/{activity_id}", response_model=RaceDetailOwner)
@@ -93,6 +93,7 @@ def patch_activity(activity_id: int, body: ActivityPatch, db: DB):
             db.rollback()
             raise _grouping_errors(exc) from exc
         classify.classify_race(db, activity.race)
+        results.prefill(activity.race)
     if "gear_ids" in values:
         gear_ids = values["gear_ids"] or []
         found = db.scalars(select(Gear.id).where(Gear.id.in_(gear_ids))).all()

@@ -82,6 +82,16 @@ That's the first release worth putting on a domain.
 - [x] [photos](features/photos.md): upload, EXIF stripping, thumbnails, the cover photo
       on the timeline card and as the link preview's `og:image`.
 
+## Phase 10 — one race page
+
+- [x] Import merged into the race page: files at the top with per-leg completeness, no
+      tray ([import](features/import.md), [grouping](features/grouping.md)).
+- [x] Race types: triathlon and single-sport swim, bike and run races
+      ([races-and-results](features/races-and-results.md#race-types)).
+- [x] Incomplete tag with a manual override; official results prefilled from the
+      recordings and confirmed by the owner
+      ([races-and-results](features/races-and-results.md#prefilled-results)).
+
 ## After that
 
 [backlog](backlog.md), [strava](features/strava.md).

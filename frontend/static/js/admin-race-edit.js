@@ -1,21 +1,27 @@
 // @ts-check
-// Race edit page (docs/features/races-and-results.md, classification.md, fueling.md,
-// gear.md, access-and-visibility.md, weather.md). Every field autosaves on blur; writes
+// Race page for the owner: the race's files at the top, with whether they are complete
+// for its race type, then everything else about the race (docs/features/races-and-results.md,
+// import.md, grouping.md, classification.md, fueling.md, gear.md, access-and-visibility.md,
+// weather.md). Without an id it is the new-race page. Every field autosaves on blur; writes
 // return the full owner race detail and only the affected sections are re-rendered so
 // focus isn't lost while typing elsewhere.
 
 import { api } from "./api.js";
 import { header, fail } from "./layout.js";
 import {
-  duration, distance, elevation, number, date, esc, parseDuration, DASH, SEGMENTS, SEGMENT_LABELS,
+  duration, distance, number, esc, parseDuration, DASH, SEGMENT_LABELS,
+  RACE_TYPES, RACE_TYPE_LABELS, raceSegments,
 } from "./format.js";
 
 /** @typedef {import("./types.js").RaceDetail} RaceDetail */
 /** @typedef {import("./types.js").Recording} Recording */
+/** @typedef {import("./types.js").RaceUpload} RaceUpload */
+/**
+ * @typedef {{filename: string|null, result: "attached"|"needs_segment"|"duplicate"|"failed",
+ *   message: string, upload_id: number|null, race_id: number|null}} Outcome
+ */
 
 const SPLIT_LABELS = { swim: "swim", t1: "T1", bike: "bike", t2: "T2", run: "run" };
-const FUEL_SEGMENTS_DEFAULT = ["bike", "run"];
-const FUEL_SEGMENTS_ALL = /** @type {const} */ (["swim", "t1", "bike", "t2", "run"]);
 
 let raceId = "";
 /** @type {any} */
@@ -32,8 +38,11 @@ let visibleFuelSegments = new Set();
 /** @type {Record<string, {carbs_g: number|null, products: {name: string, quantity: number|null}[], notes: string|null}>} */
 let fuelingDraft = {};
 
+/** @param {string} id */
+const byId = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
+
 async function main() {
-  const main = /** @type {HTMLElement} */ (document.getElementById("main"));
+  const main = byId("main");
   let who;
   try {
     who = await header();
@@ -46,18 +55,98 @@ async function main() {
     return;
   }
   siteMode = who.site_mode;
-
   raceId = new URLSearchParams(location.search).get("id") ?? "";
-  if (!raceId) {
-    fail(main, new Error("No race id given."));
+
+  let raceData = null;
+  try {
+    const [cats, gear, shoes] = await Promise.all([
+      api("/categories"),
+      api("/gear"),
+      api("/gear/last-used-shoes"),
+    ]);
+    categories = cats;
+    gearInventory = gear;
+    shoeSuggestion = shoes;
+    if (raceId) raceData = await api(`/races/${raceId}`);
+  } catch (err) {
+    fail(main, err);
     return;
   }
+  if (raceData) openRace(main, raceData, []);
+  else renderNewRace(main);
+}
 
+// --- new race ------------------------------------------------------------------------------
+
+/** No id yet: pick a type (or let the files decide), then drop the files, or start empty. */
+function renderNewRace(/** @type {HTMLElement} */ main) {
+  main.innerHTML = `
+    <div class="page-head"><h1>New race</h1></div>
+    <section class="card files-card">
+      <div class="field-row">
+        <label for="n-type">Race type</label>
+        <select id="n-type">
+          <option value="">Detect from the files</option>
+          ${RACE_TYPES.map((t) => `<option value="${t}">${esc(RACE_TYPE_LABELS[t])}</option>`).join("")}
+        </select>
+      </div>
+      ${dropzoneHtml("Drop the FIT files of one race here, or click to choose.")}
+      <ul class="result-list" id="file-results" aria-live="polite"></ul>
+      <p class="small muted">No files? <button type="button" class="link" id="n-manual">Create the
+        race without files</button> and fill it in by hand.</p>
+    </section>`;
+  const typeSelect = /** @type {HTMLSelectElement} */ (byId("n-type"));
+
+  wireDropzone(async (files) => {
+    showUploading(files);
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    if (typeSelect.value) form.append("race_type", typeSelect.value);
+    try {
+      /** @type {{outcomes: Outcome[], race: any}} */
+      const out = await api("/races/import", { method: "POST", form });
+      if (!out.race) {
+        renderOutcomes(out.outcomes);
+        return;
+      }
+      history.replaceState(null, "", `/admin/race-edit?id=${out.race.id}`);
+      openRace(main, out.race, out.outcomes);
+    } catch (err) {
+      showUploadError(err);
+    }
+  });
+
+  byId("n-manual").addEventListener("click", async () => {
+    try {
+      const created = await api("/races", {
+        method: "POST", body: { race_type: typeSelect.value || "triathlon" },
+      });
+      location.href = `/admin/race-edit?id=${created.id}`;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+// --- an existing race -------------------------------------------------------------------
+
+/** @param {HTMLElement} main @param {any} data @param {Outcome[]} outcomes */
+function openRace(main, data, outcomes) {
+  race = data;
+  raceId = String(data.id);
   main.innerHTML = `
     <div class="page-head">
       <h1 id="page-title">Race</h1>
-      <a class="small" id="view-link" href="#">View public page</a>
+      <a class="small" id="view-link" href="/races/${esc(raceId)}">View public page</a>
     </div>
+    <section class="card files-card" id="files-section">
+      <div class="files-head"><h2>Files</h2><span id="files-badge"></span></div>
+      <div id="files-status"></div>
+      ${dropzoneHtml("Drop more FIT files of this race here, or click to choose.")}
+      <ul class="result-list" id="file-results" aria-live="polite"></ul>
+      <div id="files-list"></div>
+      <div id="recordings-switch"></div>
+    </section>
     <div class="card" id="completeness-section"></div>
 
     <section class="section" id="meta-section"></section>
@@ -68,33 +157,10 @@ async function main() {
     <section class="section" id="fueling-section"></section>
     <section class="section" id="gear-section"></section>
     <section class="section" id="photos-section"></section>
-    <section class="section" id="recordings-section"></section>
     <section class="section danger-zone" id="danger-section"></section>
   `;
 
-  try {
-    const [raceData, cats, gear, shoes] = await Promise.all([
-      api(`/races/${raceId}`),
-      api("/categories"),
-      api("/gear"),
-      api("/gear/last-used-shoes"),
-    ]);
-    race = raceData;
-    categories = cats;
-    gearInventory = gear;
-    shoeSuggestion = shoes;
-  } catch (err) {
-    fail(main, err);
-    return;
-  }
-
-  visibleFuelSegments = new Set([...FUEL_SEGMENTS_DEFAULT, ...race.fueling.map((/** @type {any} */ f) => f.segment)]);
-  syncFuelingDraft();
-
-  document.getElementById("page-title").textContent = race.name || "Untitled race";
-  const viewLink = /** @type {HTMLAnchorElement} */ (document.getElementById("view-link"));
-  viewLink.href = `/races/${raceId}`;
-
+  wireFiles();
   wireMeta();
   wireResult();
   wireVisibility();
@@ -103,9 +169,20 @@ async function main() {
   wireFueling();
   wireGear();
   wirePhotos();
-  wireRecordings();
   wireDanger();
 
+  renderAll();
+  renderOutcomes(outcomes);
+}
+
+/** After a change that reaches across sections (files, race type): redraw the page. */
+function renderAll() {
+  visibleFuelSegments = new Set([
+    ...fuelDefaults(), ...race.fueling.map((/** @type {any} */ f) => f.segment),
+  ]);
+  syncFuelingDraft();
+  byId("page-title").textContent = race.name || "Untitled race";
+  renderFiles();
   renderCompleteness();
   renderMeta();
   renderResult();
@@ -115,7 +192,232 @@ async function main() {
   renderFueling();
   renderGear();
   renderPhotos();
+}
+
+async function reloadRace() {
+  race = await api(`/races/${raceId}`);
+  renderAll();
+}
+
+// --- files ----------------------------------------------------------------------------------
+
+/** @param {string} text */
+function dropzoneHtml(text) {
+  return `<div class="dropzone" id="dropzone" tabindex="0" role="button"
+      aria-label="Drop FIT files or click to choose">
+    <p>${esc(text)}</p>
+    <p class="small">A multisport file, one file per leg, or a second device's recording of a leg.</p>
+    <input type="file" id="file-input" multiple accept=".fit">
+  </div>`;
+}
+
+/** @param {(files: File[]) => void} onFiles */
+function wireDropzone(onFiles) {
+  const zone = byId("dropzone");
+  const input = /** @type {HTMLInputElement} */ (byId("file-input"));
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
+  });
+  input.addEventListener("change", () => {
+    if (input.files?.length) onFiles(Array.from(input.files));
+    input.value = "";
+  });
+  ["dragover", "dragenter"].forEach((evt) =>
+    zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((evt) =>
+    zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove("drag"); }));
+  zone.addEventListener("drop", (e) => {
+    const files = /** @type {DragEvent} */ (e).dataTransfer?.files;
+    if (files?.length) onFiles(Array.from(files));
+  });
+}
+
+/** @param {File[]} files */
+function showUploading(files) {
+  byId("file-results").innerHTML = files
+    .map((f) => `<li class="result-line">${esc(f.name)}: uploading…</li>`).join("");
+}
+
+/** @param {unknown} err */
+function showUploadError(err) {
+  byId("file-results").innerHTML =
+    `<li class="result-line failed">${esc(err instanceof Error ? err.message : String(err))}</li>`;
+}
+
+/** @param {Outcome[]} outcomes */
+function renderOutcomes(outcomes) {
+  byId("file-results").innerHTML = outcomes.map((o) => {
+    const elsewhere = o.result === "duplicate" && o.race_id && String(o.race_id) !== raceId
+      ? ` <a href="/admin/race-edit?id=${o.race_id}">Open that race</a>` : "";
+    return `<li class="result-line ${esc(o.result)}">${esc(o.filename ?? "File")}:
+      ${esc(o.message)}${elsewhere}</li>`;
+  }).join("");
+}
+
+/** @param {string} raceType */
+function typeName(raceType) {
+  return raceType === "triathlon" ? "triathlon" : RACE_TYPE_LABELS[/** @type {"run"} */ (raceType)].toLowerCase();
+}
+
+/** @param {import("./types.js").Segment} seg */
+function legHtml(seg) {
+  /** @type {Recording[]} */
+  const recs = (race.recordings ?? []).filter((/** @type {Recording} */ r) => r.segment === seg);
+  const primary = recs.find((r) => r.is_primary);
+  let state = "missing";
+  let detail = "no recording";
+  if (primary?.is_derived) {
+    state = "derived";
+    detail = `${duration(primary.elapsed_time)}, derived from the gap`;
+  } else if (primary) {
+    state = "recorded";
+    const devices = recs.length > 1 ? ` · ${recs.length} recordings` : "";
+    detail = `${duration(primary.elapsed_time)} · ${primary.device_key ?? "unknown device"}${devices}`;
+  }
+  const mark = { recorded: "✓", derived: "≈", missing: "✗" }[state];
+  return `<li class="leg ${state}">
+    <span class="leg-mark" aria-hidden="true">${mark}</span>
+    <span class="leg-name">${esc(SEGMENT_LABELS[seg])}</span>
+    <span class="leg-detail tnum">${esc(detail)}</span>
+  </li>`;
+}
+
+function renderFiles() {
+  const segments = raceSegments(race.race_type);
+  /** @type {string[]} */
+  const missing = race.missing_segments ?? [];
+  const labels = missing.map((s) => SEGMENT_LABELS[/** @type {"swim"} */ (s)]).join(", ");
+
+  byId("files-badge").innerHTML = !missing.length
+    ? `<span class="status-badge complete">Complete</span>`
+    : race.marked_complete
+      ? `<span class="status-badge complete">Marked complete</span>`
+      : `<span class="status-badge incomplete">Incomplete</span>`;
+
+  const line = !missing.length
+    ? `Every leg of this ${typeName(race.race_type)} has a recording.`
+    : race.marked_complete
+      ? `Missing: ${labels}. You marked the race complete anyway.`
+      : `Missing: ${labels}. Drop the file below, or mark the race complete if it's lost.`;
+  byId("files-status").innerHTML = `
+    <div class="field-row">
+      <label for="f-type">Race type</label>
+      <select id="f-type">
+        ${RACE_TYPES.map((t) => `<option value="${t}" ${race.race_type === t ? "selected" : ""}>
+          ${esc(RACE_TYPE_LABELS[t])}</option>`).join("")}
+      </select>
+      <span class="field-status" id="f-type-status"></span>
+    </div>
+    <ol class="legs">${segments.map(legHtml).join("")}</ol>
+    <p class="small muted">${esc(line)}</p>
+    ${missing.length || race.marked_complete ? `
+      <label class="field-row"><input type="checkbox" id="f-complete"
+        ${race.marked_complete ? "checked" : ""}> Mark as complete anyway</label>
+      <span class="field-status" id="f-complete-status"></span>` : ""}`;
+
+  /** @type {RaceUpload[]} */
+  const uploads = race.uploads ?? [];
+  byId("files-list").innerHTML = uploads.length ? `<div class="table-wrap"><table class="file-table">
+      <thead><tr>
+        <th>File</th><th>Legs</th><th>Start</th><th class="num">Distance</th><th>Device</th><th></th>
+      </tr></thead>
+      <tbody>${uploads.map(uploadRow).join("")}</tbody>
+    </table></div>`
+    : `<p class="muted small">No files yet.</p>`;
+
   renderRecordings();
+}
+
+/** @param {RaceUpload} u */
+function uploadRow(u) {
+  const start = u.detected_start_time ? new Date(u.detected_start_time).toLocaleString() : DASH;
+  let legs;
+  if (u.status === "parsed") {
+    legs = `<div class="segment-pick">
+        <label for="pick-${u.id}" class="small">Leg</label>
+        <select id="pick-${u.id}">
+          <option value="">— pick —</option>
+          ${raceSegments(race.race_type).map((s) =>
+            `<option value="${s}">${esc(SEGMENT_LABELS[s])}</option>`).join("")}
+        </select>
+        <button type="button" data-assign="${u.id}">Add</button>
+      </div>
+      <div class="small muted">The file doesn't say which sport it is.</div>
+      <div class="field-status" id="pick-${u.id}-status"></div>`;
+  } else {
+    legs = (race.recordings ?? [])
+      .filter((/** @type {Recording} */ r) => r.upload_id === u.id)
+      .map((/** @type {Recording} */ r) => esc(SEGMENT_LABELS[r.segment])
+        + (r.is_primary ? "" : ` <span class="marker">not primary</span>`))
+      .join(", ") || DASH;
+  }
+  return `<tr>
+    <td>${esc(u.filename ?? DASH)}</td>
+    <td>${legs}</td>
+    <td class="tnum">${esc(start)}</td>
+    <td class="num tnum">${esc(distance(u.detected_distance_m))}</td>
+    <td>${esc(u.summary?.device_key ?? DASH)}</td>
+    <td><button type="button" class="link" data-remove-upload="${u.id}">Remove</button></td>
+  </tr>`;
+}
+
+function wireFiles() {
+  wireDropzone(async (files) => {
+    showUploading(files);
+    const form = new FormData();
+    for (const file of files) form.append("files", file);
+    try {
+      /** @type {{outcomes: Outcome[], race: any}} */
+      const out = await api(`/races/${raceId}/uploads`, { method: "POST", form });
+      race = out.race;
+      renderAll();
+      renderOutcomes(out.outcomes);
+    } catch (err) {
+      showUploadError(err);
+    }
+  });
+
+  const section = byId("files-section");
+  section.addEventListener("change", (e) => {
+    const target = /** @type {HTMLInputElement} */ (e.target);
+    if (target.id === "f-type") {
+      const statusEl = byId("f-type-status");
+      saveField(`/races/${raceId}`, "PATCH", { race_type: target.value }, statusEl, renderAll)
+        .then((ok) => { if (!ok) target.value = race.race_type; });
+    } else if (target.id === "f-complete") {
+      saveField(`/races/${raceId}`, "PATCH", { marked_complete: target.checked },
+        byId("f-complete-status"), renderAll);
+    } else if (target.type === "radio" && target.name.startsWith("primary-")) {
+      const seg = target.name.replace("primary-", "");
+      saveField(`/activities/${target.value}`, "PATCH", { is_primary: true },
+        byId(`rec-status-${seg}`), renderAll);
+    }
+  });
+  section.addEventListener("click", async (e) => {
+    const target = /** @type {HTMLElement} */ (e.target);
+    const assignId = target.getAttribute("data-assign");
+    if (assignId) {
+      const select = /** @type {HTMLSelectElement} */ (byId(`pick-${assignId}`));
+      const statusEl = byId(`pick-${assignId}-status`);
+      if (!select.value) { setStatus(statusEl, "Pick a leg first.", true); return; }
+      saveField(`/races/${raceId}/attach`, "POST", { segments: { [assignId]: select.value } },
+        statusEl, renderAll);
+      return;
+    }
+    const removeId = target.getAttribute("data-remove-upload");
+    if (removeId) {
+      const upload = (race.uploads ?? []).find((/** @type {RaceUpload} */ u) => String(u.id) === removeId);
+      if (!confirm(`Remove ${upload?.filename ?? "this file"} and its recordings from the race? `
+        + "This can't be undone.")) return;
+      try {
+        await api(`/uploads/${removeId}`, { method: "DELETE" });
+        await reloadRace();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      }
+    }
+  });
 }
 
 // --- shared save helper ------------------------------------------------------------------
@@ -123,6 +425,7 @@ async function main() {
 /**
  * @param {string} path @param {string} method @param {any} body
  * @param {HTMLElement|null} statusEl @param {() => void} [after]
+ * @returns {Promise<boolean>} whether the save went through
  */
 async function saveField(path, method, body, statusEl, after) {
   if (statusEl) { statusEl.textContent = "Saving…"; statusEl.className = "field-status"; }
@@ -132,11 +435,13 @@ async function saveField(path, method, body, statusEl, after) {
     if (statusEl) { statusEl.textContent = "Saved"; statusEl.className = "field-status ok"; }
     after?.();
     renderCompleteness();
+    return true;
   } catch (err) {
     if (statusEl) {
       statusEl.textContent = err instanceof Error ? err.message : String(err);
       statusEl.className = "field-status err";
     }
+    return false;
   }
 }
 
@@ -144,7 +449,8 @@ function renderCompleteness() {
   const el = /** @type {HTMLElement} */ (document.getElementById("completeness-section"));
   const c = race.completeness ?? {};
   const labels = {
-    official_result: "Official result", fueling: "Fueling", classification: "Classification",
+    recordings: "Recordings", official_result: "Official result", fueling: "Fueling",
+    classification: "Classification",
     comparison: "Comparison", public: "What visitors would see",
   };
   el.innerHTML = `<h2 class="small muted" style="margin-top:0">Completeness</h2>
@@ -235,6 +541,13 @@ function setStatus(el, text, isErr) {
 
 // --- official result -------------------------------------------------------------------
 
+/** The splits the form asks for. A single-sport race's one split is its total, so none. */
+function resultSegments() {
+  const segments = raceSegments(race.race_type);
+  return segments.length > 1 ? segments : [];
+}
+
+/** @param {import("./types.js").Segment} seg */
 function splitFieldHtml(seg) {
   const r = race.official_result;
   const value = r ? r[`${seg}_time`] : null;
@@ -249,16 +562,28 @@ function splitFieldHtml(seg) {
 }
 
 function renderResult() {
-  const el = /** @type {HTMLElement} */ (document.getElementById("result-section"));
+  const el = byId("result-section");
   const r = race.official_result;
+  const splits = resultSegments();
+  const source = !r
+    ? `<p class="small muted">Type it in, or add the race's files to start from the recorded times.</p>`
+    : r.is_prefilled
+      ? `<p class="small muted">Filled in from the recordings and kept up to date with them,
+          until you change a value or confirm it.</p>`
+      : "";
+  // A calculated total stays out of the input: sending it back would turn it into a typed
+  // one, and a typed total no longer follows the splits.
+  const totalDerived = r?.total_is_derived;
   el.innerHTML = `<h2>Official result</h2>
-    <div class="split-grid">${SEGMENTS.map(splitFieldHtml).join("")}</div>
+    ${source}
+    ${splits.length ? `<div class="split-grid">${splits.map(splitFieldHtml).join("")}</div>` : ""}
     <div class="field-row">
       <label for="or-total">Total</label>
-      <input id="or-total" data-or-field="total_time" placeholder="h:mm:ss"
-        value="${r?.total_time != null ? duration(r.total_time) : ""}">
+      <input id="or-total" data-or-field="total_time"
+        placeholder="${totalDerived ? esc(duration(r.total_time)) : "h:mm:ss"}"
+        value="${r?.total_time != null && !totalDerived ? duration(r.total_time) : ""}">
       <span class="field-status" id="or-total-status"></span>
-      ${r?.total_is_derived ? `<span class="small muted">calculated from splits</span>` : ""}
+      ${totalDerived ? `<span class="small muted">calculated from splits</span>` : ""}
     </div>
     <p class="result-summary" id="or-summary"></p>
     <div class="fields">
@@ -268,21 +593,26 @@ function renderResult() {
       <div class="field"><label for="or-age_group_place">Age-group place</label>
         <input id="or-age_group_place" type="text" inputmode="numeric" data-or-field="age_group_place"
           value="${r?.age_group_place ?? ""}"><span class="field-status" id="or-age_group_place-status"></span></div>
-    </div>`;
+    </div>
+    <label class="field-row confirm-row"><input type="checkbox" id="or-confirmed"
+      ${r?.is_confirmed ? "checked" : ""} ${r ? "" : "disabled"}>
+      Confirmed: checked against the published results</label>
+    <span class="field-status" id="or-confirmed-status"></span>`;
   updateResultLive();
 }
 
 function updateResultLive() {
   const summary = document.getElementById("or-summary");
   if (!summary) return;
-  const totalInput = /** @type {HTMLInputElement} */ (document.getElementById("or-total"));
+  const totalInput = /** @type {HTMLInputElement} */ (byId("or-total"));
   const totalStr = totalInput.value.trim();
-  if (totalStr) { summary.textContent = ""; summary.className = "result-summary"; return; }
+  const splits = resultSegments();
+  if (totalStr || !splits.length) { summary.textContent = ""; summary.className = "result-summary"; return; }
   const missing = [];
   let sum = 0;
   let allValid = true;
-  for (const seg of SEGMENTS) {
-    const input = /** @type {HTMLInputElement} */ (document.getElementById(`or-${seg}`));
+  for (const seg of splits) {
+    const input = /** @type {HTMLInputElement} */ (byId(`or-${seg}`));
     const v = input.value.trim();
     if (!v) { missing.push(SPLIT_LABELS[seg]); allValid = false; continue; }
     const parsed = parseDuration(v);
@@ -303,14 +633,23 @@ function updateResultLive() {
 }
 
 function wireResult() {
-  const el = /** @type {HTMLElement} */ (document.getElementById("result-section"));
+  const el = byId("result-section");
   el.addEventListener("input", (e) => {
     if (/** @type {HTMLElement} */ (e.target).getAttribute?.("data-or-field")) updateResultLive();
+  });
+  el.addEventListener("change", (e) => {
+    const target = /** @type {HTMLInputElement} */ (e.target);
+    if (target.id !== "or-confirmed") return;
+    saveField(`/races/${raceId}/official-result`, "PUT", { is_confirmed: target.checked },
+      byId("or-confirmed-status"), () => renderResult());
   });
   el.addEventListener("focusout", (e) => {
     const target = /** @type {HTMLInputElement} */ (e.target);
     const field = target.getAttribute?.("data-or-field");
     if (!field || target.disabled) return;
+    // Tabbing through a prefilled result must not count as an edit (which would stop it
+    // following the recordings), so only a changed value saves.
+    if (target.value === target.defaultValue) return;
     const statusEl = document.getElementById(`${target.id}-status`);
     // The server derives the total from the splits atomically (races-and-results.md#official-total-time):
     // a save that omits an already-entered split would look like a partial write, but the row
@@ -324,12 +663,13 @@ function wireResult() {
 }
 
 /** Reads every official-result field currently in the DOM. Returns null (after showing an
- * inline error on the offending field) if something typed can't be parsed. */
+ * inline error on the offending field) if something typed can't be parsed.
+ * @param {HTMLElement|null} fallbackStatusEl */
 function collectResultForm(fallbackStatusEl) {
   /** @type {Record<string, number|null>} */
   const body = {};
-  for (const field of [...SEGMENTS.map((s) => `${s}_time`), "total_time"]) {
-    const input = /** @type {HTMLInputElement} */ (document.getElementById(`or-${field.replace("_time", "")}`));
+  for (const field of [...resultSegments().map((s) => `${s}_time`), "total_time"]) {
+    const input = /** @type {HTMLInputElement} */ (byId(`or-${field.replace("_time", "")}`));
     if (input.disabled) continue; // the calculated split: let the server keep deriving it
     const raw = input.value.trim();
     if (raw === "") { body[field] = null; continue; }
@@ -341,7 +681,7 @@ function collectResultForm(fallbackStatusEl) {
     body[field] = secs;
   }
   for (const field of ["overall_place", "age_group_place"]) {
-    const input = /** @type {HTMLInputElement} */ (document.getElementById(`or-${field}`));
+    const input = /** @type {HTMLInputElement} */ (byId(`or-${field}`));
     const raw = input.value.trim();
     if (raw === "") { body[field] = null; continue; }
     const n = parseInt(raw, 10);
@@ -389,6 +729,9 @@ function wireVisibility() {
 
 function renderCategory() {
   const el = /** @type {HTMLElement} */ (document.getElementById("category-section"));
+  // The categories are triathlon distances (classification.md).
+  el.hidden = race.race_type !== "triathlon";
+  if (el.hidden) { el.innerHTML = ""; return; }
   const c = race.classification ?? { source: "unclassified", auto_category: null, detail: null };
   let line;
   if (c.source === "auto") {
@@ -503,11 +846,17 @@ function fuelSegmentHtml(seg) {
   </div>`;
 }
 
+/** Fuel is taken on the bike and the run; a single-sport race has its one leg. */
+function fuelDefaults() {
+  return race.race_type === "triathlon" ? ["bike", "run"] : [race.race_type];
+}
+
 function renderFueling() {
   const el = /** @type {HTMLElement} */ (document.getElementById("fueling-section"));
-  const hidden = FUEL_SEGMENTS_ALL.filter((s) => !visibleFuelSegments.has(s));
+  const all = raceSegments(race.race_type);
+  const hidden = all.filter((s) => !visibleFuelSegments.has(s));
   el.innerHTML = `<h2>Fueling</h2>
-    ${[...visibleFuelSegments].sort((a, b) => FUEL_SEGMENTS_ALL.indexOf(/** @type {any} */(a)) - FUEL_SEGMENTS_ALL.indexOf(/** @type {any} */(b)))
+    ${[...visibleFuelSegments].sort((a, b) => all.indexOf(/** @type {any} */(a)) - all.indexOf(/** @type {any} */(b)))
       .map(fuelSegmentHtml).join("")}
     ${hidden.length ? `<p class="small">
       ${hidden.map((s) => `<button type="button" data-add-segment="${s}">Add ${esc(SEGMENT_LABELS[s])}</button>`).join(" ")}
@@ -738,8 +1087,8 @@ function wirePhotos() {
   });
 }
 
+/** The primary switch, for legs recorded by more than one device (grouping.md). */
 function renderRecordings() {
-  const el = /** @type {HTMLElement} */ (document.getElementById("recordings-section"));
   /** @type {Map<string, any[]>} */
   const bySegment = new Map();
   for (const r of race.recordings ?? []) {
@@ -747,35 +1096,17 @@ function renderRecordings() {
     bySegment.get(r.segment).push(r);
   }
   const multi = [...bySegment.entries()].filter(([, list]) => list.length > 1);
-  if (!multi.length) {
-    el.innerHTML = `<h2>Recordings</h2><p class="muted small">Every segment has one recording.</p>`;
-    return;
-  }
-  el.innerHTML = `<h2>Recordings</h2>
+  byId("recordings-switch").innerHTML = multi.length ? `<h3>Primary recording</h3>
+    <p class="small muted">Every number shown for a leg comes from its primary recording.</p>
     ${multi.map(([seg, list]) => `<div>
-      <strong>${esc(SEGMENT_LABELS[seg])}</strong>
+      <strong>${esc(SEGMENT_LABELS[/** @type {"swim"} */ (seg)])}</strong>
       ${list.map((r) => `<label class="recording-switch">
         <input type="radio" name="primary-${seg}" value="${r.id}" ${r.is_primary ? "checked" : ""}>
         ${esc(r.device_key ?? `Recording ${r.id}`)}
         <span class="small muted tnum">${distance(r.distance_m)} · ${duration(r.elapsed_time)}</span>
       </label>`).join("")}
       <span class="field-status" id="rec-status-${seg}"></span>
-    </div>`).join("")}`;
-}
-
-function wireRecordings() {
-  const el = /** @type {HTMLElement} */ (document.getElementById("recordings-section"));
-  el.addEventListener("change", (e) => {
-    const target = /** @type {HTMLInputElement} */ (e.target);
-    if (target.type !== "radio") return;
-    const seg = target.name.replace("primary-", "");
-    const statusEl = document.getElementById(`rec-status-${seg}`);
-    saveField(`/activities/${target.value}`, "PATCH", { is_primary: true }, statusEl, () => {
-      renderRecordings();
-      renderGear();
-      renderCategory();
-    });
-  });
+    </div>`).join("")}` : "";
 }
 
 // --- danger zone ----------------------------------------------------------------------
@@ -783,12 +1114,12 @@ function wireRecordings() {
 function wireDanger() {
   const el = /** @type {HTMLElement} */ (document.getElementById("danger-section"));
   el.innerHTML = `<h2>Danger zone</h2>
-    <p class="small muted">Deleting sends this race's uploads back to the import tray instead of
-      deleting them.</p>
+    <p class="small muted">Deleting removes the race with its files, recordings, fueling and
+      photos.</p>
     <button type="button" id="delete-race">Delete race</button>
     <span class="field-status" id="delete-status"></span>`;
   document.getElementById("delete-race")?.addEventListener("click", async () => {
-    if (!confirm(`Delete "${race.name}"? Its uploads go back to the tray. This can't be undone.`)) return;
+    if (!confirm(`Delete "${race.name}" and its files? This can't be undone.`)) return;
     try {
       await api(`/races/${raceId}`, { method: "DELETE" });
       location.href = "/";

@@ -23,7 +23,7 @@ git clone <this repository> race-app && cd race-app
 cp .env.example .env            # set POSTGRES_PASSWORD; SITE_MODE=private or public
 docker compose up -d --build
 docker compose exec app python -m app.cli create-owner --username you
-# → http://localhost:8000, then Import to upload your first FIT files
+# → http://localhost:8000, then New race to drop your first FIT files
 ```
 
 The app runs its database migrations on start. Forgot the password?

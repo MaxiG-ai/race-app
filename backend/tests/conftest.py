@@ -6,6 +6,7 @@ than by rolled-back transactions.
 
 import os
 import tempfile
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 _BASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://race:race@localhost:5432/race")
@@ -101,11 +102,43 @@ def owner():
     return client
 
 
-def upload(client, *names: str):
+def upload(client, *names: str, race_id: int | None = None, race_type: str | None = None):
+    """Drop fixture files onto race `race_id`, or onto a new race. Returns the outcomes."""
     files = [
         ("files", (n, fixture_bytes(n) if not n.startswith("/") else Path(n).read_bytes()))
         for n in names
     ]
-    response = client.post("/api/uploads", files=files)
+    if race_id is None:
+        data = {"race_type": race_type} if race_type else {}
+        response = client.post("/api/races/import", files=files, data=data)
+    else:
+        response = client.post(f"/api/races/{race_id}/uploads", files=files)
     assert response.status_code == 200, response.text
-    return response.json()
+    return response.json()["outcomes"]
+
+
+# The Apple fixture's bike leg (fixtures/README.md).
+APPLE_BIKE_START = datetime(2026, 7, 11, 9, 33, tzinfo=UTC)
+
+
+@pytest.fixture
+def edge_alongside_apple(monkeypatch):
+    """The Edge bike file moved in time onto the Apple race's bike leg: a second device
+    recording the same leg, which is how the two would really arrive."""
+    from app.services import imports
+
+    real = imports.parse_fit
+    edge = fixture_bytes("edge_single_bike.fit")
+
+    def parse(data):
+        parsed = real(data)
+        if data == edge:
+            shift = APPLE_BIKE_START - parsed.start_time
+            for session in parsed.sessions:
+                session.start_time += shift
+                for lap in session.laps:
+                    lap.start_time += shift
+            parsed.local_date = date(2026, 7, 11)
+        return parsed
+
+    monkeypatch.setattr(imports, "parse_fit", parse)

@@ -19,8 +19,8 @@ Backfill races from Strava for athletes whose older FIT files are gone.
 ## Design when built
 
 Reuse the grouping path; don't add a parallel one. Fetch activities by date range → create
-`upload` rows with `source = strava`, no file, deduplicated on `external_id` → they appear
-in the same tray with the same proposals and group the same way
+`upload` rows with `source = strava`, no file, deduplicated on `external_id` → the owner
+picks activities onto a race page, and they fill legs exactly like dropped files
 ([grouping](grouping.md)). The only Strava-specific code is the OAuth flow and the
 activity → `upload` mapping. The OAuth tokens belong to the owner and are stored
 server-side, never sent to the browser.

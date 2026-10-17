@@ -3,7 +3,7 @@
 
 import { api } from "./api.js";
 import { header, segmentBar, fail } from "./layout.js";
-import { date, duration, distance, elevation, esc } from "./format.js";
+import { date, duration, distance, elevation, esc, RACE_TYPE_LABELS } from "./format.js";
 
 /** @typedef {import("./types.js").RaceListItem} RaceListItem */
 
@@ -97,7 +97,7 @@ function statStrip(stats) {
 /** @param {boolean} owner @param {string} siteTitle */
 function emptyState(owner, siteTitle) {
   if (owner) {
-    return `<p class="muted">No races yet. <a href="/admin/import">Import your first race</a>.</p>`;
+    return `<p class="muted">No races yet. <a href="/admin/race-edit">Add your first race</a>.</p>`;
   }
   return `<p class="muted">${esc(siteTitle)}<br>Nothing here yet.</p>`;
 }
@@ -106,6 +106,7 @@ function emptyState(owner, siteTitle) {
 function card(race, who) {
   const notPublic = who.owner && who.site_mode === "public" && !race.is_public
     ? `<span class="marker">not public</span>` : "";
+  const incomplete = race.is_incomplete ? `<span class="marker">incomplete</span>` : "";
   const sourceNote = race.times_source === "official" ? "official"
     : race.times_source === "recorded" ? "recorded" : "";
   return `
@@ -116,8 +117,9 @@ function card(race, who) {
           loading="lazy" alt="" width="${race.cover_photo.width}" height="${race.cover_photo.height}">` : ""}
         <div class="race-card-head">
           <span class="race-name">${esc(race.name)}</span>
+          ${race.race_type !== "triathlon" ? `<span class="badge">${esc(RACE_TYPE_LABELS[race.race_type])}</span>` : ""}
           ${race.category ? `<span class="badge">${esc(race.category.label)}</span>` : ""}
-          ${notPublic}
+          ${notPublic}${incomplete}
         </div>
         <div class="muted small">${esc(date(race.date))}</div>
         <div class="race-card-time tnum">${esc(duration(race.total_time))}

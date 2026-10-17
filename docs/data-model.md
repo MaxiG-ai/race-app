@@ -26,9 +26,9 @@ race ────────────────┤
 |---|---|---|
 | `owner`, `session` | [access-and-visibility](features/access-and-visibility.md#data) | exactly one owner row |
 | `site_settings` | [access-and-visibility](features/access-and-visibility.md#data) | site title, athlete name |
-| `race` | [races-and-results](features/races-and-results.md#data) | ordered by `date`; carries `is_public` |
-| `official_result` | [races-and-results](features/races-and-results.md#data) | typed in by hand |
-| `upload` | [import](features/import.md#data) | staging row per file, exists before any race |
+| `race` | [races-and-results](features/races-and-results.md#data) | ordered by `date`; carries `is_public` and `race_type` |
+| `official_result` | [races-and-results](features/races-and-results.md#data) | prefilled from the recordings, then typed and confirmed by hand |
+| `upload` | [import](features/import.md#data) | one row per file, on the race it was dropped onto |
 | `recorded_activity` | [import](features/import.md#data) | one row per segment per upload |
 | `lap_split` | [import](features/import.md#data) | pacing shape only, never totals |
 | `race_category` | [classification](features/classification.md#data) | seeded, editable as data |

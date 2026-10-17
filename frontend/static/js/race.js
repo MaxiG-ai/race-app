@@ -4,7 +4,7 @@
 import { api, ApiError } from "./api.js";
 import { header, segmentBar, tableFallback, fail } from "./layout.js";
 import {
-  DASH, SEGMENTS, SPORTS, SEGMENT_LABELS, duration, delta, distance, elevation,
+  DASH, SPORTS, SEGMENT_LABELS, RACE_TYPE_LABELS, raceSegments, duration, delta, distance, elevation,
   pace, paceValue, number, date as fmtDate, esc,
 } from "./format.js";
 import { lineChart, token } from "./charts.js";
@@ -79,21 +79,22 @@ function renderHeader() {
   const bySegment = /** @type {Record<string, import("./types.js").SegmentOut>} */ ({});
   for (const s of r.segments) bySegment[s.segment] = s;
 
-  const officialComplete = !!official && SEGMENTS.every((s) => official[`${s}_time`] != null);
+  const segments = raceSegments(r.race_type);
+  const officialComplete = !!official && segments.every((s) => official[`${s}_time`] != null);
   let times, derivedList;
   if (officialComplete && official) {
     times = /** @type {Record<string, number|null>} */ ({});
-    for (const s of SEGMENTS) times[s] = official[`${s}_time`];
+    for (const s of segments) times[s] = official[`${s}_time`];
     derivedList = official.derived_split ? [official.derived_split] : [];
   } else {
     times = /** @type {Record<string, number|null>} */ ({});
-    for (const s of SEGMENTS) times[s] = bySegment[s]?.elapsed_time ?? null;
+    for (const s of segments) times[s] = bySegment[s]?.elapsed_time ?? null;
     derivedList = r.segments.filter((s) => s.is_derived).map((s) => s.segment);
   }
 
-  const recordedComplete = SEGMENTS.every((s) => bySegment[s]?.elapsed_time != null);
+  const recordedComplete = segments.every((s) => bySegment[s]?.elapsed_time != null);
   const recordedTotal = recordedComplete
-    ? SEGMENTS.reduce((sum, s) => sum + /** @type {number} */ (bySegment[s].elapsed_time), 0)
+    ? segments.reduce((sum, s) => sum + /** @type {number} */ (bySegment[s].elapsed_time), 0)
     : null;
   const totalTime = official?.total_time ?? recordedTotal;
 
@@ -102,6 +103,7 @@ function renderHeader() {
     <h1>${esc(r.name)}</h1>
     <p class="race-meta">
       ${esc(meta)}
+      ${r.race_type !== "triathlon" ? `<span class="badge">${esc(RACE_TYPE_LABELS[r.race_type])}</span>` : ""}
       ${r.category ? `<span class="badge">${esc(r.category.label)}</span>` : ""}
     </p>
     <p class="race-total tnum">${esc(duration(totalTime))}</p>
@@ -116,18 +118,28 @@ function renderSplits() {
   const bySegment = /** @type {Record<string, import("./types.js").SegmentOut>} */ ({});
   for (const s of r.segments) bySegment[s.segment] = s;
 
-  const rows = SEGMENTS.map((seg) => rowFor(seg));
-  rows.push(totalRow());
+  const segments = raceSegments(r.race_type);
+  const rows = segments.map((seg) => rowFor(seg));
+  // A single-sport race's one split is its total, so a total row would repeat it.
+  if (segments.length > 1) rows.push(totalRow());
+  const unconfirmed = official && !official.is_confirmed
+    ? `<p class="small muted">${official.is_prefilled
+      ? "The official times are taken from the recording until they're checked against the published results."
+      : "The official times aren't checked against the published results yet."}</p>`
+    : "";
 
   document.getElementById("race-splits").innerHTML = `
     <h2>Splits</h2>
     <div class="table-wrap"><table>
       <thead><tr>
-        <th>Segment</th><th class="num">Official</th><th class="num">Recorded</th>
+        <th>Segment</th>
+        <th class="num">Official${unconfirmed ? ` <span class="marker">unconfirmed</span>` : ""}</th>
+        <th class="num">Recorded</th>
         <th class="num">&Delta;</th><th class="num">Distance</th><th class="num">Pace</th>
       </tr></thead>
       <tbody>${rows.join("")}</tbody>
     </table></div>
+    ${unconfirmed}
   `;
 
   function rowFor(/** @type {import("./types.js").Segment} */ seg) {
@@ -150,9 +162,9 @@ function renderSplits() {
   }
 
   function totalRow() {
-    const recordedComplete = SEGMENTS.every((s) => bySegment[s]?.elapsed_time != null);
+    const recordedComplete = segments.every((s) => bySegment[s]?.elapsed_time != null);
     const recordedTotal = recordedComplete
-      ? SEGMENTS.reduce((sum, s) => sum + /** @type {number} */ (bySegment[s].elapsed_time), 0)
+      ? segments.reduce((sum, s) => sum + /** @type {number} */ (bySegment[s].elapsed_time), 0)
       : null;
     const officialTotal = official?.total_time ?? null;
     const d = officialTotal != null && recordedTotal != null ? recordedTotal - officialTotal : null;

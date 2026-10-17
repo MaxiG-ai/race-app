@@ -36,9 +36,13 @@ hundred points per segment (`services/geo.py`).
 `/races/{id}` (served through the page shell, so a shared link gets a preview; see
 [architecture](../architecture.md#link-previews)), top to bottom:
 
-1. **Header**: name, date, location, category badge, total time, segment bar.
-2. **Splits comparison**: a table with rows swim, T1, bike, T2, run, total; columns
-   official, recorded, Δ. Derived transitions are annotated. Unknown values show as "—".
+1. **Header**: name, date, location, race-type badge (single-sport races), category
+   badge, total time, segment bar.
+2. **Splits comparison**: a table with rows swim, T1, bike, T2, run, total (a
+   single-sport race: its one row); columns official, recorded, Δ. Derived transitions
+   are annotated. Unknown values show as "—". An unconfirmed official result is marked
+   *unconfirmed*, with a note when it is still taken from the recording
+   ([races-and-results](races-and-results.md#prefilled-results)).
 3. **Course map**: Leaflet with OSM tiles, one polyline per segment in the sport colours,
    fitted to the session bounding boxes.
 4. **Pacing chart**: Chart.js line chart, one sport at a time. Which series exist depends on

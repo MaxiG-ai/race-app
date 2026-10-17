@@ -5,14 +5,15 @@
 ## Goal
 
 Not every race arrives as one multisport file. Strava has no multisport activity type,
-and some watches write one file per leg. The owner picks which staged uploads belong
-together, and the app builds a race from them. When two devices recorded the same leg,
-both recordings are kept, and the owner chooses which one counts.
+and some watches write one file per leg. The owner drops a race's files onto its race
+page, together or one at a time, and each file fills the leg its sport says. When two
+devices recorded the same leg, both recordings are kept, and the owner chooses which one
+counts.
 
 ## Visibility
 
-The tray and grouping actions are owner only. Visitors see only the primary recording of
-each segment and never learn that others exist
+Files, the leg picker and the recording switch are owner only. Visitors see only the
+primary recording of each segment and never learn that others exist
 ([redaction](access-and-visibility.md#redaction)).
 
 ## Data
@@ -24,38 +25,42 @@ using `is_primary`, `is_derived` and `upload.race_id`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/uploads?status=parsed` | ungrouped tray plus proposed groupings |
-| `POST` | `/api/races/group` | `{upload_ids, segments?}` → new race |
-| `POST` | `/api/races/{id}/attach` | add uploads to an existing race (backfill a leg, add a second device) |
+| `POST` | `/api/races/import`, `/api/races/{id}/uploads` | files onto a new or existing race ([import](import.md#api)) |
+| `POST` | `/api/races/{id}/attach` | `{segments: {upload_id: segment}}`: file uploads that wait for their leg |
+| `DELETE` | `/api/uploads/{id}` | take a file and its recordings off the race |
 | `PATCH` | `/api/activities/{id}` | `{is_primary: true}`: switch the primary recording for that segment |
 
 ## UI
 
-- **Grouping tray** (on `admin/import.html`): ungrouped uploads as rows (sport, start,
-  distance, device). Proposed groups are highlighted; select uploads, then confirm.
-- **Segment picker**: shown only when detection is ambiguous.
-- **Recording switch** (on the race edit page): shown when a segment has more than one
-  recording; pick the primary one.
+All on the race page's Files section ([races-and-results](races-and-results.md#ui)):
+
+- **Leg picker**: on a file whose sport is unknown, in a triathlon. Picks one of the
+  race type's segments.
+- **Recording switch**: shown when a segment has more than one recording; pick the
+  primary one.
+- **Remove**: per file; the race keeps everything else.
 
 ## Rules
 
 ### Flow
 
 ```
-  upload N files ─► parse ─► upload rows ─┬─ multisport   ─► auto-group ─► race
-                                          └─ single-sport ─► tray
-                                                              │ owner selects, confirms
-                                                              ▼
-                                                    assign segments ─► race
+  drop files on a race ─► parse ─┬─ multisport    ─► every leg
+                                 ├─ swim/bike/run ─► that leg (a 2nd file: a 2nd device)
+                                 └─ other         ─► owner picks the leg (a single-sport
+                                                     race has only one: no question)
 ```
 
-1. Files detected as multisport group themselves ([import](import.md#import-flow-multisport)).
-2. Everything else lands in the tray.
-3. The tray **proposes** groupings: uploads on the same local day, within a few hours of
-   each other, in swim → bike → run order. Proposals are never committed automatically:
-   a Sunday brick session looks exactly like a race.
-4. Segments come from each upload's detected sport, ordered by start time. If that's
-   ambiguous (two runs, or an `other`), the UI asks instead of guessing.
+1. Files detected as multisport fill every leg ([import](import.md#import-flow-multisport)).
+2. A single-sport file fills the leg of its detected sport. A second file of the same
+   sport is a second device on that leg, not another leg: there are no repeated legs.
+3. A file that doesn't say its sport waits on the race (`status = parsed`) for the
+   owner to pick its leg, instead of being guessed.
+4. A file must fit the race: its sport must be a leg of the race type, and it must be
+   recorded within hours of the race's other files
+   ([import](import.md#which-race-a-file-goes-to)). Grouping is never inferred across
+   races: a Sunday brick session looks exactly like a race, so the owner always says
+   which race a file belongs to by dropping it there.
 
 ### Derived transitions
 
@@ -86,8 +91,11 @@ unique index).
 
 ## Acceptance
 
-- Grouping three single-sport uploads gives 5 segments, and T1/T2 have `is_derived = true`.
-- Overlapping or hours-apart legs → 422, and nothing is written.
+- Dropping three single-sport files gives 5 segments, and T1/T2 have `is_derived = true`;
+  legs dropped one at a time give the same race.
+- An overlapping or hours-apart leg is refused and nothing of it is written; the other
+  legs are kept.
+- A file of unknown sport waits for its leg; a leg outside the race type → 422.
+- Removing a file removes its recordings and the transition derived from them.
 - Attaching a second bike recording keeps the old primary; switching it moves the flag
   atomically and never leaves two primaries or none.
-- A proposal is only ever a suggestion: `GET /uploads` doesn't write anything.

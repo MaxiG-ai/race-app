@@ -3,6 +3,7 @@
 // open question in docs/architecture.md about generating them from OpenAPI.
 
 /** @typedef {"swim"|"t1"|"bike"|"t2"|"run"} Segment */
+/** @typedef {"triathlon"|"swim"|"bike"|"run"} RaceType */
 
 /** @typedef {{id: number, key: string, label: string}} CategoryRef */
 
@@ -18,6 +19,21 @@
  * @property {Segment|null} derived_split  the split computed as total minus the others
  * @property {number|null} overall_place
  * @property {number|null} age_group_place
+ * @property {boolean} is_prefilled  taken from the recordings; not yet edited or confirmed
+ * @property {boolean} is_confirmed  checked against the published results
+ */
+
+/**
+ * @typedef {Object} RaceUpload  a file on the race page (owner only)
+ * @property {number} id
+ * @property {string|null} filename
+ * @property {"parsed"|"grouped"|"failed"} status  parsed: waiting for its leg to be picked
+ * @property {"multisport"|"single_sport"|null} kind
+ * @property {"swim"|"bike"|"run"|"other"|null} detected_sport
+ * @property {string|null} detected_start_time
+ * @property {number|null} detected_distance_m
+ * @property {Record<string, any>|null} summary
+ * @property {string} uploaded_at
  */
 
 /**
@@ -66,6 +82,7 @@
  * @property {number} id
  * @property {string} name
  * @property {string} date  local date, YYYY-MM-DD
+ * @property {RaceType} race_type
  * @property {string|null} location_name
  * @property {number|null} location_lat
  * @property {number|null} location_lng
@@ -83,6 +100,10 @@
  * @property {{source: "auto"|"manual"|"unclassified", auto_category: CategoryRef|null,
  *   detail: {nearest: string, nearest_label: string, segment: Segment, delta_pct: number}|null,
  *   classified_at: string|null}} [classification]
+ * @property {boolean} [marked_complete]
+ * @property {Segment[]} [missing_segments]  legs of the race type without a recording
+ * @property {boolean} [is_incomplete]  missing legs, and not marked complete
+ * @property {RaceUpload[]} [uploads]
  * @property {Recording[]} [recordings]
  * @property {Record<string, {missing?: string[], usable: boolean}>} [completeness]
  */
@@ -92,6 +113,7 @@
  * @property {number} id
  * @property {string} name
  * @property {string} date
+ * @property {RaceType} race_type
  * @property {string|null} location_name
  * @property {boolean} is_public
  * @property {CategoryRef|null} category
@@ -100,6 +122,7 @@
  * @property {Record<Segment, number|null>} segment_times
  * @property {Segment[]} derived_segments
  * @property {Photo|null} cover_photo
+ * @property {boolean} [is_incomplete]  owner only
  */
 
 /**

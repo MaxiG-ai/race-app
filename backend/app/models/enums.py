@@ -15,6 +15,20 @@ SEGMENTS: tuple[Segment, ...] = tuple(Segment)
 SPORT_SEGMENTS: tuple[Segment, ...] = (Segment.SWIM, Segment.BIKE, Segment.RUN)
 
 
+class RaceType(StrEnum):
+    """What a race is made of (docs/features/races-and-results.md#race-types)."""
+
+    TRIATHLON = "triathlon"
+    SWIM = "swim"
+    BIKE = "bike"
+    RUN = "run"
+
+
+def race_segments(race_type: RaceType) -> tuple[Segment, ...]:
+    """The segments a race of this type consists of, in order."""
+    return SEGMENTS if race_type is RaceType.TRIATHLON else (Segment(race_type.value),)
+
+
 class Sport(StrEnum):
     SWIM = "swim"
     BIKE = "bike"

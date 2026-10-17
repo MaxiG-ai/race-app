@@ -12,7 +12,7 @@ from sqlalchemy import ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base, utcnow
-from app.models.enums import ClassificationSource
+from app.models.enums import ClassificationSource, RaceType, Segment, race_segments
 
 if TYPE_CHECKING:
     from app.models.classification import RaceCategory
@@ -32,6 +32,9 @@ class Race(Base):
     location_lat: Mapped[float | None]
     location_lng: Mapped[float | None]
     notes: Mapped[str | None]
+    race_type: Mapped[RaceType] = mapped_column(default=RaceType.TRIATHLON)
+    # The owner's word that the recordings are as complete as they will get (a lost file).
+    marked_complete: Mapped[bool] = mapped_column(default=False)
 
     is_public: Mapped[bool] = mapped_column(default=False)
     published_at: Mapped[datetime | None]
@@ -72,6 +75,18 @@ class Race(Base):
         """segment -> the primary recording; the only rows a visitor ever sees."""
         return {a.segment: a for a in self.activities if a.is_primary}
 
+    def segments(self) -> tuple[Segment, ...]:
+        return race_segments(self.race_type)
+
+    def missing_segments(self) -> list[Segment]:
+        """Segments of this race type without a recording (a derived transition counts)."""
+        primaries = self.primary_activities()
+        return [s for s in self.segments() if s not in primaries]
+
+    @property
+    def is_incomplete(self) -> bool:
+        return bool(self.missing_segments()) and not self.marked_complete
+
 
 class OfficialResult(Base):
     __tablename__ = "official_result"
@@ -80,6 +95,10 @@ class OfficialResult(Base):
     race_id: Mapped[int] = mapped_column(ForeignKey("race.id", ondelete="CASCADE"), unique=True)
     total_time: Mapped[int]
     total_is_derived: Mapped[bool] = mapped_column(default=False)
+    # Filled in from the primary recordings and refreshed with them, until the owner
+    # edits or confirms it (races-and-results.md#prefilled-results).
+    is_prefilled: Mapped[bool] = mapped_column(default=False)
+    is_confirmed: Mapped[bool] = mapped_column(default=False)  # checked against the results
     swim_time: Mapped[int | None]
     t1_time: Mapped[int | None]
     bike_time: Mapped[int | None]
