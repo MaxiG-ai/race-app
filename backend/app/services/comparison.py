@@ -30,7 +30,7 @@ def segment_times(race: Race) -> dict[Segment, int | None]:
     """Official split where known (the remainder counts), else the primary recording."""
     result = race.official_result
     official = {s: result.split(s) for s in SEGMENTS} if result else {}
-    if result and (remainder := results.remainder_split(result)):
+    if result and (remainder := results.remainder_split(race, result)):
         official[Segment(remainder[0])] = remainder[1]
     primaries = race.primary_activities()
     return {
@@ -46,19 +46,24 @@ def _distances(race: Race) -> dict[Segment, float | None]:
     return {s: getattr(primaries.get(s), "distance_m", None) for s in SEGMENTS}
 
 
+def _sports(race: Race) -> list[Segment]:
+    """The race type's measured legs: swim, bike and run, or the one of a single-sport race."""
+    return [s for s in race.segments() if s in SPORT_SEGMENTS]
+
+
 def _close(x: float | None, y: float | None, tolerance: float) -> bool:
     return x is not None and y is not None and y > 0 and abs(x - y) / y <= tolerance
 
 
 def comparable(a: Race, b: Race) -> bool:
-    if a.id == b.id:
+    if a.id == b.id or a.race_type != b.race_type:
         return False
     if a.race_category_id is not None or b.race_category_id is not None:
         return a.race_category_id == b.race_category_id
     if ClassificationSource.MANUAL in (a.classification_source, b.classification_source):
         return False
     da, db_ = _distances(a), _distances(b)
-    return all(_close(da[s], db_[s], UNCLASSIFIED_MATCH) for s in SPORT_SEGMENTS)
+    return all(_close(da[s], db_[s], UNCLASSIFIED_MATCH) for s in _sports(a))
 
 
 # --- checkpoints ------------------------------------------------------------------------
@@ -141,20 +146,22 @@ def _intra(
 def checkpoints(a: Race, b: Race) -> dict[str, Any]:
     times = {"a": segment_times(a), "b": segment_times(b)}
     dist = _distances(a)
-    known = [dist[s] for s in SPORT_SEGMENTS]
+    segments = a.segments()  # comparable races share a type
+    known = [dist[s] for s in _sports(a)]
     if all(known):
         sport_total = sum(known)  # type: ignore[arg-type]
         widths = {
-            s: dist[s] if s in SPORT_SEGMENTS else TRANSITION_WIDTH * sport_total for s in SEGMENTS
+            s: dist[s] if s in SPORT_SEGMENTS else TRANSITION_WIDTH * sport_total for s in segments
         }
     else:  # official splits only: nominal proportions, still honest about order
-        widths = {
+        nominal = {
             Segment.SWIM: 1.0,
             Segment.T1: 0.1,
             Segment.BIKE: 4.0,
             Segment.T2: 0.1,
             Segment.RUN: 2.0,
         }
+        widths = {s: nominal[s] for s in segments}
     scale = sum(widths.values())  # type: ignore[arg-type]
 
     points = [
@@ -164,7 +171,7 @@ def checkpoints(a: Race, b: Race) -> dict[str, Any]:
     cum = {"a": 0, "b": 0}
     normalised = False
     coarse = True
-    for s in SEGMENTS:
+    for s in segments:
         width = widths[s] / scale  # type: ignore[operator]
         if s in SPORT_SEGMENTS:
             intra, norm = _intra(s, a, b, times)

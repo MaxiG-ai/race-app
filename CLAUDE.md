@@ -24,7 +24,8 @@ The app is being rebuilt nearly from scratch (see `docs/roadmap.md`):
 The rewrite has replaced v1 (FastAPI + React, multi-tenant) in the working tree; v1 is
 only in git history. Where to find things: access rules in `backend/app/access.py`
 (router factories + `visible_race(s)`), the FIT parser in `services/fit_import.py`, what
-a parse becomes in the database (tray, race, grouping, primaries) in `services/imports.py`.
+a parse becomes in the database (which race and leg, primaries, derived transitions) in
+`services/imports.py`; prefilled official results in `services/results.py`.
 
 ## Non-negotiables
 

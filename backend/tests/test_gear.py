@@ -1,12 +1,16 @@
 """docs/features/gear.md#acceptance."""
 
+import pytest
+
 from tests.conftest import upload
+
+# Every Edge upload here is a second bike recording of the Apple race.
+pytestmark = pytest.mark.usefixtures("edge_alongside_apple")
 
 
 def _race_with_edge(owner):
     race_id = upload(owner, "apple_multisport.fit")[0]["race_id"]
-    edge = upload(owner, "edge_single_bike.fit")[0]["upload_id"]
-    owner.post(f"/api/races/{race_id}/attach", json={"upload_ids": [edge]})
+    assert upload(owner, "edge_single_bike.fit", race_id=race_id)[0]["result"] == "attached"
     return race_id
 
 
@@ -63,14 +67,31 @@ def test_manual_assignment_is_never_overwritten(owner):
     assert [g["name"] for g in after["gear"]] == ["Manual pick"]
 
 
-def test_bike_gear_is_not_auto_attached_to_the_run(owner):
+def test_bike_gear_is_not_auto_attached_to_the_run(owner, monkeypatch):
     bike = owner.post("/api/gear", json={"kind": "bike", "name": "Speedmax"}).json()
     owner.post(
         f"/api/gear/{bike['id']}/devices",
         json={"manufacturer": "favero_electronics", "serial_number": "800800800"},
     )
-    upload(owner, "edge_single_bike.fit")
-    body = owner.post("/api/races/group", json={"upload_ids": [1], "segments": {"1": "run"}})
+    from app.models.enums import Sport
+    from app.services import imports
+
+    as_parsed = imports.parse_fit
+
+    def unknown_sport(data):  # a file that doesn't say its sport: the owner picks the leg
+        parsed = as_parsed(data)
+        parsed.sessions[0].sport = Sport.OTHER
+        return parsed
+
+    monkeypatch.setattr(imports, "parse_fit", unknown_sport)
+    race_id = owner.post("/api/races", json={}).json()["id"]
+    out = upload(owner, "edge_single_bike.fit", race_id=race_id)[0]
+    assert out["result"] == "needs_segment"
+    body = owner.post(
+        f"/api/races/{race_id}/attach", json={"segments": {str(out["upload_id"]): "run"}}
+    )
+    assert body.status_code == 200, body.text
+    assert body.json()["segments"][0]["segment"] == "run"
     assert body.json()["segments"][0]["gear"] == []
 
 

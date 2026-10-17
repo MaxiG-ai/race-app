@@ -8,7 +8,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.models.enums import ClassificationSource, Segment
+from app.models.enums import (
+    ClassificationSource,
+    RaceType,
+    Segment,
+    Sport,
+    UploadKind,
+    UploadStatus,
+)
 from app.schemas.common import Model, Patch, Seconds
 from app.schemas.photos import PhotoOut
 
@@ -36,6 +43,8 @@ class OfficialResultOut(Model):
     derived_split: Segment | None = None  # the one split computed as the remainder
     overall_place: int | None
     age_group_place: int | None
+    is_prefilled: bool  # taken from the recordings, not yet edited or confirmed
+    is_confirmed: bool  # the owner checked it against the published results
 
 
 class OfficialResultIn(Patch):
@@ -47,6 +56,7 @@ class OfficialResultIn(Patch):
     run_time: Seconds | None = None
     overall_place: int | None = Field(default=None, ge=1)
     age_group_place: int | None = Field(default=None, ge=1)
+    is_confirmed: bool | None = None
 
 
 class GearName(Model):
@@ -114,6 +124,7 @@ class RaceDetailPublic(BaseModel):
     id: int
     name: str
     date: dt.date
+    race_type: RaceType
     location_name: str | None
     location_lat: float | None
     location_lng: float | None
@@ -135,10 +146,28 @@ class Classification(BaseModel):
     classified_at: datetime | None
 
 
+class RaceUpload(Model):
+    """A file on the race page. Owner only."""
+
+    id: int
+    filename: str | None
+    status: UploadStatus  # parsed: waiting for the owner to pick its leg
+    kind: UploadKind | None
+    detected_sport: Sport | None
+    detected_start_time: datetime | None
+    detected_distance_m: float | None
+    summary: dict[str, Any] | None
+    uploaded_at: datetime
+
+
 class RaceDetailOwner(RaceDetailPublic):
     published_at: datetime | None
     weather_fetched_at: datetime | None
     classification: Classification
+    marked_complete: bool
+    missing_segments: list[Segment]  # legs of this race type without a recording
+    is_incomplete: bool  # missing legs, and not marked complete by the owner
+    uploads: list[RaceUpload]
     recordings: list[Recording]
     completeness: dict[str, Any]
 
@@ -149,6 +178,7 @@ class RaceListItem(BaseModel):
     id: int
     name: str
     date: dt.date
+    race_type: RaceType
     location_name: str | None
     is_public: bool
     category: CategoryRef | None
@@ -159,14 +189,24 @@ class RaceListItem(BaseModel):
     cover_photo: PhotoOut | None
 
 
+class RaceListItemOwner(RaceListItem):
+    is_incomplete: bool
+
+
 class RaceList(BaseModel):
     items: list[RaceListItem]
+    total: int
+
+
+class RaceListOwner(BaseModel):
+    items: list[RaceListItemOwner]
     total: int
 
 
 class RaceCreate(BaseModel):
     date: dt.date | None = None  # defaults to today
     name: str | None = None
+    race_type: RaceType = RaceType.TRIATHLON
 
 
 class RacePatch(Patch):
@@ -177,6 +217,8 @@ class RacePatch(Patch):
     location_lng: float | None = Field(default=None, ge=-180, le=180)
     notes: str | None = None
     race_category_id: int | None = None
+    race_type: RaceType | None = None
+    marked_complete: bool | None = None
 
 
 class Stats(BaseModel):

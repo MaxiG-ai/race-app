@@ -4,9 +4,11 @@ from tests.factories import make_race
 
 
 def test_private_mode_pages_redirect_to_login(anon):
-    for path in ("/", "/races/1", "/compare?a=1&b=2", "/admin/import"):
+    for path in ("/", "/races/1", "/compare?a=1&b=2", "/admin/race-edit"):
         response = anon.get(path, follow_redirects=False)
         assert response.status_code == 303 and response.headers["location"].startswith("/login")
+    old = anon.get("/admin/import", follow_redirects=False)  # importing moved onto the race page
+    assert old.status_code == 301 and old.headers["location"] == "/admin/race-edit"
     assert anon.get("/login").status_code == 200
 
 

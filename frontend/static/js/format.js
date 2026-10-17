@@ -5,6 +5,17 @@ export const DASH = "—";
 export const SEGMENTS = /** @type {const} */ (["swim", "t1", "bike", "t2", "run"]);
 export const SPORTS = /** @type {const} */ (["swim", "bike", "run"]);
 export const SEGMENT_LABELS = { swim: "Swim", t1: "T1", bike: "Bike", t2: "T2", run: "Run" };
+export const RACE_TYPES = /** @type {const} */ (["triathlon", "swim", "bike", "run"]);
+export const RACE_TYPE_LABELS = { triathlon: "Triathlon", swim: "Swim race", bike: "Bike race", run: "Run race" };
+
+/**
+ * The segments a race of this type consists of (backend: enums.race_segments).
+ * @param {string} raceType
+ * @returns {readonly import("./types.js").Segment[]}
+ */
+export function raceSegments(raceType) {
+  return raceType === "swim" || raceType === "bike" || raceType === "run" ? [raceType] : SEGMENTS;
+}
 
 /** @param {any} v */
 const unknown = (v) => v === null || v === undefined || Number.isNaN(v);

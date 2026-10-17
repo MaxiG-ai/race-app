@@ -10,7 +10,9 @@ at a glance). For a public site, this is the page visitors land on.
 
 ## Visibility
 
-Owner: all races, with a "not public" marker on hidden ones in public mode. Visitors:
+Owner: all races, with a "not public" marker on hidden ones in public mode and an
+"incomplete" marker on races missing a file
+([races-and-results](races-and-results.md#race-types)). Visitors:
 public races only, and the stat strip counts only those
 ([access](access-and-visibility.md#enforcement-lives-in-two-places)).
 
@@ -46,7 +48,8 @@ rows' totals.
 
 - **Timeline spine**: a vertical line with one dot per race. It's the signature element
   ([visual-system](../design/visual-system.md#signature-element)).
-- **Race card**: name, date, category badge, total time, segment bar, and the cover photo
+- **Race card**: name, date, race-type badge (single-sport races), category badge, total
+  time, segment bar, and the cover photo
   across the top when the race has one ([photos](photos.md#ui)). The whole card links
   to `/races/{id}`.
 - **Segment bar**: swim/bike/run widths proportional to time; transitions are neutral

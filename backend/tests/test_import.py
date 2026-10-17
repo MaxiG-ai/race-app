@@ -1,5 +1,6 @@
 """docs/features/import.md#acceptance, against the synthetic fixtures."""
 
+import hashlib
 from datetime import date
 
 import pytest
@@ -142,7 +143,7 @@ def test_wrong_session_sequence_writes_nothing(owner, db):
         parse_fit(bytes(data[:14]) + b"\x00" * 40)
     before = db.scalar(select(func.count()).select_from(RecordedActivity))
     out = upload(owner, "overlap_boundary.fit")[0]
-    assert out["result"] == "created_race"
+    assert out["result"] == "attached"
     assert db.scalar(select(func.count()).select_from(RecordedActivity)) == before + 5
 
 
@@ -151,7 +152,7 @@ def test_wrong_session_sequence_writes_nothing(owner, db):
 
 def test_multisport_upload_creates_a_private_race(owner):
     out = upload(owner, "apple_multisport.fit")[0]
-    assert out["result"] == "created_race"
+    assert out["result"] == "attached"
     race = owner.get(f"/api/races/{out['race_id']}").json()
     assert race["is_public"] is False and race["name"] == "Untitled race"
     assert race["date"] == "2026-07-11"
@@ -164,24 +165,75 @@ def test_multisport_upload_creates_a_private_race(owner):
 
 def test_same_file_twice_is_one_upload(owner, db):
     first = upload(owner, "apple_multisport.fit")[0]
-    second = upload(owner, "apple_multisport.fit")[0]
-    assert second["result"] == "duplicate" and second["upload_id"] == first["upload_id"]
-    assert "Identical to an upload you already have (apple_multisport.fit" in second["message"]
+    again = upload(owner, "apple_multisport.fit", race_id=first["race_id"])[0]
+    assert again["result"] == "duplicate" and again["message"] == "Already part of this race."
+    elsewhere = upload(owner, "apple_multisport.fit")[0]  # dropped on a new race
+    assert elsewhere["result"] == "duplicate" and elsewhere["race_id"] == first["race_id"]
+    assert (
+        "Identical to apple_multisport.fit in “Untitled race” (11 Jul 2026)"
+        in (elsewhere["message"])
+    )
     assert db.scalar(select(func.count()).select_from(Upload)) == 1
+    assert len(owner.get("/api/races").json()["items"]) == 1  # no empty race left behind
 
 
-def test_single_sport_goes_to_the_tray(owner):
+def test_a_single_sport_file_makes_that_single_sport_race(owner):
     out = upload(owner, "edge_single_bike.fit")[0]
-    assert out["result"] == "in_tray" and out["race_id"] is None
-    tray = owner.get("/api/uploads?status=parsed").json()["uploads"]
-    assert tray[0]["detected_sport"] == "bike" and tray[0]["kind"] == "single_sport"
+    assert out["result"] == "attached" and out["message"] == "Added as the bike leg."
+    race = owner.get(f"/api/races/{out['race_id']}").json()
+    assert race["race_type"] == "bike" and race["date"] == "2026-04-10"
+    assert race["missing_segments"] == [] and race["is_incomplete"] is False
+    assert race["classification"]["source"] == "unclassified" and race["category"] is None
+    assert [(u["filename"], u["status"]) for u in race["uploads"]] == [
+        ("edge_single_bike.fit", "grouped")
+    ]
+
+
+def test_chosen_type_beats_detection_and_leaves_legs_missing(owner):
+    out = upload(owner, "edge_single_bike.fit", race_type="triathlon")[0]
+    race = owner.get(f"/api/races/{out['race_id']}").json()
+    assert race["race_type"] == "triathlon"
+    assert race["missing_segments"] == ["swim", "t1", "t2", "run"] and race["is_incomplete"]
+
+
+def test_a_multisport_file_on_a_single_sport_race_is_refused(owner, db):
+    bike = upload(owner, "edge_single_bike.fit")[0]["race_id"]
+    out = upload(owner, "apple_multisport.fit", race_id=bike)[0]
+    assert out["result"] == "failed" and "Make it a triathlon" in out["message"]
+    assert db.scalar(select(func.count()).select_from(Upload)) == 1  # nothing stored
+
+
+def test_a_bike_file_on_a_run_race_is_refused(owner):
+    run = owner.post("/api/races", json={"race_type": "run"}).json()["id"]
+    out = upload(owner, "edge_single_bike.fit", race_id=run)[0]
+    assert out["result"] == "failed"
+    assert out["message"] == (
+        "This is a bike file, but this is a run race. Change the race type to add it."
+    )
+    assert owner.get(f"/api/races/{run}").json()["uploads"] == []
+
+
+def test_a_file_from_another_day_is_refused(owner):
+    race_id = upload(owner, "apple_multisport.fit")[0]["race_id"]
+    out = upload(owner, "edge_single_bike.fit", race_id=race_id)[0]
+    assert out["result"] == "failed" and "looks like a different race" in out["message"]
+    assert "10 Apr 2026" in out["message"]
+
+
+def test_nothing_that_fits_makes_no_race(owner):
+    out = upload(owner, "apple_multisport.fit", race_type="run")[0]
+    assert out["result"] == "failed" and out["race_id"] is None
+    assert owner.get("/api/races").json()["items"] == []
 
 
 def test_non_fit_and_oversized_files_are_rejected(owner, monkeypatch):
     from app.config import get_settings
 
-    response = owner.post("/api/uploads", files=[("files", ("x.fit", b"not a fit file at all"))])
-    assert response.json()[0]["result"] == "failed"
+    response = owner.post(
+        "/api/races/import", files=[("files", ("x.fit", b"not a fit file at all"))]
+    )
+    assert response.json()["outcomes"][0]["result"] == "failed"
+    assert response.json()["race"] is None
     monkeypatch.setattr(get_settings(), "max_upload_bytes", 100)
     assert upload(owner, "apple_multisport.fit")[0]["message"].startswith("The file is larger")
 
@@ -199,7 +251,7 @@ def test_enrichment_failure_never_fails_the_import(owner, monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(classify, "classify_race", broken)
-    assert upload(owner, "apple_multisport.fit")[0]["result"] == "created_race"
+    assert upload(owner, "apple_multisport.fit")[0]["result"] == "attached"
 
 
 def test_reimport_keeps_primary_and_manual_gear(owner, db):
@@ -226,23 +278,50 @@ def test_private_real_files_parse():
 
 
 def test_identical_copy_of_a_failed_upload_is_retried_not_called_duplicate(owner, db):
-    """Issue #5: Strava's swim and run downloads are the same file. When that file failed
+    """Issue #5: Strava's swim and run downloads are the same file. When that file fails
     to import, the second copy must report the failure, not "you already have this"."""
     broken = fixture_bytes("apple_multisport.fit")[:14] + b"\x00" * 40
     first, second = (
-        owner.post("/api/uploads", files=[("files", (name, broken))]).json()[0]
+        owner.post("/api/races/import", files=[("files", (name, broken))]).json()["outcomes"][0]
         for name in ("swim.fit", "run.fit")
     )
     assert first["result"] == second["result"] == "failed"
     assert second["message"] == first["message"] and "Could not read" in second["message"]
-    assert second["upload_id"] == first["upload_id"]
+    assert db.scalar(select(func.count()).select_from(Upload)) == 0  # failures aren't kept
+
+
+def test_the_same_file_twice_in_one_drop(owner, db):
+    data = fixture_bytes("apple_multisport.fit")
+    files = [("files", (name, data)) for name in ("swim.fit", "run.fit")]
+    outcomes = owner.post("/api/races/import", files=files).json()["outcomes"]
+    assert [o["result"] for o in outcomes] == ["attached", "duplicate"]
+    assert outcomes[1]["message"] == "The same file as swim.fit, sent twice."
+    assert db.scalar(select(func.count()).select_from(Upload)) == 1
+
+
+def test_an_upload_left_without_a_race_is_adopted(owner, db):
+    """Uploads the old tray held (or a deleted race sent back) join the race they're
+    dropped on, instead of being called duplicates of nothing."""
+    from app.models.enums import UploadStatus
+
+    data = fixture_bytes("apple_multisport.fit")
+    db.add(
+        Upload(
+            filename="old.fit",
+            content_hash=hashlib.sha256(data).hexdigest(),
+            status=UploadStatus.PARSED,
+        )
+    )
+    db.commit()
+    out = upload(owner, "apple_multisport.fit")[0]
+    assert out["result"] == "attached" and out["upload_id"] == 1
     assert db.scalar(select(func.count()).select_from(Upload)) == 1
 
 
 def test_multisport_without_a_recorded_t2_derives_it(owner):
     """Issue #5: a watch that went straight from bike to run recorded four sessions."""
     out = upload(owner, "missing_t2.fit")[0]
-    assert out["result"] == "created_race", out["message"]
+    assert out["result"] == "attached", out["message"]
     segments = {
         s["segment"]: s for s in owner.get(f"/api/races/{out['race_id']}").json()["segments"]
     }

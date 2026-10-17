@@ -17,7 +17,7 @@ export async function header(links = {}) {
   const owner = who.owner
     ? `<span class="divider" role="separator"></span>
       ${links.edit ? link(links.edit, "Edit") : ""}
-      ${link("/admin/import", "Import")}${link("/admin/gear", "Gear")}${link("/admin/site", "Site")}`
+      ${newRaceLink()}${link("/admin/gear", "Gear")}${link("/admin/site", "Site")}`
     : "";
   const nav = document.createElement("header");
   nav.className = "navbar";
@@ -42,6 +42,12 @@ export async function header(links = {}) {
   });
   document.body.prepend(nav);
   return { ...who, site };
+}
+
+/** The race page without an id is the new-race page. */
+function newRaceLink() {
+  const here = location.pathname === "/admin/race-edit" && !new URLSearchParams(location.search).has("id");
+  return `<a href="/admin/race-edit"${here ? ' aria-current="page"' : ""}>New race</a>`;
 }
 
 /**

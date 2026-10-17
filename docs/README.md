@@ -33,9 +33,9 @@ feature rewrite can't dilute it. Feature files link to it (e.g.
 | File | Priority | Summary |
 |---|---|---|
 | [access-and-visibility](features/access-and-visibility.md) | core | owner login, private/public site mode, per-race visibility, public redaction |
-| [import](features/import.md) | core | FIT upload, parsing, multisport → race |
-| [grouping](features/grouping.md) | core | staging tray, single-sport legs → race, multiple recordings per leg |
-| [races-and-results](features/races-and-results.md) | core | race record, official result, manual entry, partial data |
+| [import](features/import.md) | core | FIT upload onto the race page, parsing, multisport → race |
+| [grouping](features/grouping.md) | core | files onto a race, one leg per single-sport file, multiple recordings per leg |
+| [races-and-results](features/races-and-results.md) | core | race page, race types, official result (prefilled, confirmed), partial data |
 | [timeline](features/timeline.md) | core | the home page: chronological race feed, stat strip |
 | [race-detail](features/race-detail.md) | core | official vs recorded splits, pacing chart, course map |
 | [classification](features/classification.md) | next | race category inferred from measured distances |

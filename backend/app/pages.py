@@ -21,7 +21,7 @@ from app.routers.access import site_settings
 router = APIRouter(include_in_schema=False)
 
 PLACEHOLDER = "<!-- head -->"
-ADMIN_PAGES = {"import", "race-edit", "gear", "site"}
+ADMIN_PAGES = {"race-edit", "gear", "site"}
 _ANONYMOUS = Viewer(is_owner=False)
 
 
@@ -169,6 +169,12 @@ def trends_page(request: Request, db: DB, viewer: CurrentViewer):
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: DB):
     return _shell("login.html", site_settings(db).site_title, str(request.base_url), "Log in")
+
+
+@router.get("/admin/import")
+def old_import_page():
+    """Importing moved onto the race page; a new race starts there without an id."""
+    return RedirectResponse("/admin/race-edit", status_code=301)
 
 
 @router.get("/admin/{page}", response_class=HTMLResponse)

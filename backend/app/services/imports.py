@@ -1,8 +1,9 @@
 """The database side of import and grouping (docs/features/import.md#rules,
 docs/features/grouping.md#rules).
 
-`fit_import` parses bytes; this module decides what a parse becomes: an upload in the
-tray, a new race, or extra recordings on an existing race.
+`fit_import` parses bytes; this module decides what a parse becomes. Files are always
+dropped onto a race (a new one, or the race page they belong to): each one becomes
+recordings of that race, or waits on it for the owner to pick its leg.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
@@ -18,90 +19,78 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import LapSplit, Race, RecordedActivity, Upload
-from app.models.enums import Segment, Sport, UploadKind, UploadStatus
-from app.services import classify, gear, weather
+from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadStatus
+from app.services import classify, gear, results, weather
 from app.services.fit_import import FitParseError, ParsedFile, ParsedSession, parse_fit
 
 log = logging.getLogger(__name__)
 
 # --- grouping constants ------------------------------------------------------------
 
-# Proposal window: legs within this span on the same local day. Proposals are only
-# ever suggestions: a Sunday brick session looks exactly like a race.
-PROPOSAL_WINDOW = timedelta(hours=8)
+# A file starting or ending further than this from the race's other recordings is from
+# another day, or another session: it belongs to a different race.
+SAME_RACE_WINDOW = timedelta(hours=8)
 # A gap longer than this between two legs means the grouping is wrong.
 MAX_TRANSITION_S = 3600
 
 _SPORT_SEGMENT = {Sport.SWIM: Segment.SWIM, Sport.BIKE: Segment.BIKE, Sport.RUN: Segment.RUN}
 _TRANSITIONS = ((Segment.SWIM, Segment.T1, Segment.BIKE), (Segment.BIKE, Segment.T2, Segment.RUN))
+_SEGMENT_LABELS = {"swim": "swim", "t1": "T1", "bike": "bike", "t2": "T2", "run": "run"}
 
 
 class GroupingError(ValueError):
-    """The requested grouping is wrong; nothing was written."""
+    """The file or grouping doesn't fit the race; nothing was written."""
 
 
-def propose(uploads: list[Upload]) -> list[dict]:
-    """Suggested groups among tray uploads. Reads only; never writes."""
-    tray = sorted(
-        (u for u in uploads if u.kind is UploadKind.SINGLE_SPORT and u.detected_start_time),
-        key=lambda u: u.detected_start_time,  # type: ignore[arg-type, return-value]
-    )
-    clusters: list[list[Upload]] = []
-    for u in tray:
-        head = clusters[-1][0] if clusters else None
-        if (
-            head
-            and u.detected_start_time - head.detected_start_time <= PROPOSAL_WINDOW  # type: ignore[operator]
-            and (u.summary or {}).get("local_date") == (head.summary or {}).get("local_date")
-        ):
-            clusters[-1].append(u)
-        else:
-            clusters.append([u])
-    proposals = []
-    for cluster in clusters:
-        if len(cluster) < 2:
-            continue
-        sports = [u.detected_sport for u in cluster]
-        segments = {
-            u.id: _SPORT_SEGMENT[u.detected_sport]
-            for u in cluster
-            if u.detected_sport in _SPORT_SEGMENT and sports.count(u.detected_sport) == 1
-        }
-        proposals.append(
-            {
-                "upload_ids": [u.id for u in cluster],
-                "segments": segments,
-                "ambiguous": len(segments) < len(cluster),
-            }
+def type_label(race_type: RaceType) -> str:
+    return "triathlon" if race_type is RaceType.TRIATHLON else f"{race_type.value} race"
+
+
+def infer_type(files: list[ParsedFile]) -> RaceType:
+    """For a race made from files: files that all name one sport make that single-sport
+    race. Anything else (a multisport file, several sports, a file that doesn't say its
+    sport) is a triathlon, where an unknown file waits for the owner to pick its leg
+    instead of being guessed into the one leg of a single-sport race."""
+    sports = {f.detected_sport for f in files}
+    if len(sports) == 1 and (sport := sports.pop()) in _SPORT_SEGMENT:
+        return RaceType(sport.value)  # type: ignore[union-attr]
+    return RaceType.TRIATHLON
+
+
+def segment_for(race: Race, parsed: ParsedFile) -> Segment | None:
+    """The leg a single-sport file fills, from its detected sport. None: a multisport file
+    (its sessions say), or a file the owner must place (an `other` file in a triathlon)."""
+    allowed = race.segments()
+    if parsed.kind is UploadKind.MULTISPORT:
+        if race.race_type is not RaceType.TRIATHLON:
+            raise GroupingError(
+                f"This is a multisport file, but this is a {type_label(race.race_type)}. "
+                "Make it a triathlon to add the file."
+            )
+        return None
+    segment = _SPORT_SEGMENT.get(parsed.detected_sport)  # type: ignore[arg-type]
+    if segment is None:
+        return allowed[0] if len(allowed) == 1 else None
+    if segment not in allowed:
+        raise GroupingError(
+            f"This is a {segment} file, but this is a {type_label(race.race_type)}. "
+            "Change the race type to add it."
         )
-    return proposals
+    return segment
 
 
-def resolve_segments(uploads: list[Upload], given: dict[int, Segment]) -> dict[int, Segment]:
-    """Segments from the detected sport, ordered by start time; ask when ambiguous."""
-    result: dict[int, Segment] = {}
-    for u in uploads:
-        if u.status is not UploadStatus.PARSED:
-            raise GroupingError(f"Upload {u.id} is not in the tray.")
-        if u.kind is not UploadKind.SINGLE_SPORT:
-            raise GroupingError(f"Upload {u.id} is a multisport file; it groups itself.")
-        segment = given.get(u.id) or _SPORT_SEGMENT.get(u.detected_sport)  # type: ignore[arg-type]
-        if segment is None:
-            raise GroupingError(f"Pick a segment for upload {u.id} ({u.filename}).")
-        result[u.id] = segment
-    auto = [s for uid, s in result.items() if uid not in given]
-    if len(auto) != len(set(auto)):
-        raise GroupingError("Two uploads have the same sport; pick their segments.")
-    return result
-
-
-def load_tray(db: Session, upload_ids: list[int]) -> list[Upload]:
-    if not upload_ids:
-        raise GroupingError("Select at least one upload.")
-    uploads = list(db.scalars(select(Upload).where(Upload.id.in_(upload_ids))))
-    if len(uploads) != len(set(upload_ids)):
-        raise GroupingError("Some of the selected uploads don't exist.")
-    return uploads
+def check_same_race(race: Race, parsed: ParsedFile) -> None:
+    recorded = [a for a in race.activities if not a.is_derived]
+    if not recorded:
+        return
+    start = min(a.start_time for a in recorded)
+    end = max(a.end_time for a in recorded)
+    if parsed.start_time > end + SAME_RACE_WINDOW or parsed.end_time < start - SAME_RACE_WINDOW:
+        day = parsed.local_date
+        raise GroupingError(
+            f"This file was recorded on {day.day} {day:%b %Y}, hours away from this race's "
+            "other recordings. It looks like a different race."
+        )
 
 
 def reconcile_primary(db: Session, race: Race, segment: Segment) -> None:
@@ -165,38 +154,67 @@ def synthesize_transitions(db: Session, race: Race) -> None:
         db.flush()
 
 
-def group(db: Session, upload_ids: list[int], given: dict[int, Segment]) -> Race:
-    """POST /api/races/group. The caller commits; any GroupingError means roll back."""
-    tray = load_tray(db, upload_ids)
-    if len(tray) == 1 and tray[0].kind is UploadKind.MULTISPORT:
-        # A multisport file sent back to the tray by a race deletion.
-        upload = tray[0]
-        if upload.status is not UploadStatus.PARSED:
-            raise GroupingError(f"Upload {upload.id} is not in the tray.")
-        parsed = parse_fit(read_original(upload))
-        race = create_race(db, parsed)
-        add_recordings(db, race, upload, parsed)
-    else:
-        segments = resolve_segments(tray, given)
-        parsed = {u.id: parse_fit(read_original(u)) for u in tray}
-        first = min(parsed.values(), key=lambda p: p.start_time)
-        race = create_race(db, first)
-        for u in sorted(tray, key=lambda u: parsed[u.id].start_time):
-            add_recordings(db, race, u, parsed[u.id], segments[u.id])
-    synthesize_transitions(db, race)
-    enrich(db, race)
-    return race
-
-
-def attach(db: Session, race: Race, upload_ids: list[int], given: dict[int, Segment]) -> None:
-    """POST /api/races/{id}/attach: backfill a leg or add a second device."""
-    tray = load_tray(db, upload_ids)
-    segments = resolve_segments(tray, given)
-    for u in tray:
+def assign(db: Session, race: Race, given: dict[int, Segment]) -> None:
+    """POST /api/races/{id}/attach: file the uploads that waited on this race for the owner
+    to pick their leg. The caller commits; any GroupingError means roll back."""
+    if not given:
+        raise GroupingError("Pick a leg for at least one file.")
+    uploads = list(db.scalars(select(Upload).where(Upload.id.in_(given))))
+    if len(uploads) != len(given):
+        raise GroupingError("Some of these files don't exist.")
+    for u in uploads:
+        if u.status is not UploadStatus.PARSED or u.race_id not in (None, race.id):
+            raise GroupingError(f"{u.filename or 'This file'} is already part of a race.")
+        if u.kind is not UploadKind.SINGLE_SPORT:
+            raise GroupingError(f"{u.filename or 'This file'} is a multisport file.")
+        segment = given[u.id]
+        if segment not in race.segments():
+            raise GroupingError(f"A {type_label(race.race_type)} has no {segment} leg.")
         parsed = parse_fit(read_original(u))
-        add_recordings(db, race, u, parsed, segments[u.id])
+        check_same_race(race, parsed)
+        first = not _has_recordings(race)
+        add_recordings(db, race, u, parsed, segment)
+        if first:
+            _take_date_and_place(race, parsed)
     synthesize_transitions(db, race)
-    enrich(db, race, with_weather=False)
+    refresh(db, race)
+
+
+def _has_recordings(race: Race) -> bool:
+    return any(not a.is_derived for a in race.activities)
+
+
+def _take_date_and_place(race: Race, parsed: ParsedFile) -> None:
+    """A race takes its date and place from its first recording (Trap 11: local date)."""
+    race.date = parsed.local_date
+    if race.location_lat is None and race.location_lng is None:
+        race.location_lat, race.location_lng = parsed.location
+
+
+def remove_upload(db: Session, upload: Upload) -> str | None:
+    """DELETE /api/uploads/{id}: the upload and every recording made from it. Returns the
+    stored file for the caller to unlink once the transaction has committed."""
+    race = db.get(Race, upload.race_id) if upload.race_id is not None else None
+    if race is not None:
+        gone = [a for a in race.activities if a.upload_id == upload.id]
+        for a in gone:
+            race.activities.remove(a)
+        db.flush()
+        for segment in {a.segment for a in gone}:
+            reconcile_primary(db, race, segment)
+        synthesize_transitions(db, race)
+        refresh(db, race)
+    path = upload.stored_path
+    db.delete(upload)
+    return path
+
+
+def discard_uploads(db: Session, race: Race) -> list[str]:
+    """A deleted race takes its uploads with it: there is no tray to send them back to."""
+    uploads = list(db.scalars(select(Upload).where(Upload.race_id == race.id)))
+    for u in uploads:
+        db.delete(u)
+    return [u.stored_path for u in uploads if u.stored_path]
 
 
 # --- uploads ----------------------------------------------------------------------------
@@ -205,10 +223,21 @@ def attach(db: Session, race: Race, upload_ids: list[int], given: dict[int, Segm
 @dataclass
 class Outcome:
     filename: str | None
-    result: str  # created_race | in_tray | duplicate | failed
+    result: str  # attached | needs_segment | duplicate | failed
     message: str
     upload_id: int | None = None
     race_id: int | None = None
+
+
+@dataclass
+class Received:
+    """A file that passed the checks and parsed; nothing is written yet."""
+
+    filename: str | None
+    data: bytes
+    content_hash: str
+    parsed: ParsedFile
+    upload: Upload | None  # a row to reuse: an earlier failed copy, or a leftover
 
 
 def _is_fit(data: bytes) -> bool:
@@ -226,7 +255,7 @@ def read_original(upload: Upload) -> bytes:
 
 
 def summary(parsed: ParsedFile) -> dict:
-    """Parse preview for the tray, so it renders without re-reading files."""
+    """Parse preview, so the file list renders without re-reading files."""
     return {
         "local_date": parsed.local_date.isoformat(),
         "orphan_record_count": parsed.orphan_record_count,
@@ -246,7 +275,6 @@ def summary(parsed: ParsedFile) -> dict:
 
 
 def apply_parse(upload: Upload, parsed: ParsedFile) -> None:
-    upload.status = UploadStatus.GROUPED if upload.race_id else UploadStatus.PARSED
     upload.kind = parsed.kind
     upload.detected_sport = parsed.detected_sport
     upload.detected_start_time = parsed.start_time
@@ -256,9 +284,8 @@ def apply_parse(upload: Upload, parsed: ParsedFile) -> None:
     upload.error = None
 
 
-def receive(db: Session, filename: str | None, data: bytes) -> Outcome:
-    """One file of a POST /api/uploads. Commits per file, so one bad file doesn't undo
-    the others."""
+def check(db: Session, race: Race | None, filename: str | None, data: bytes) -> Received | Outcome:
+    """Size, header, deduplication and the parse. Writes nothing."""
     if len(data) > get_settings().max_upload_bytes:
         return Outcome(filename, "failed", "The file is larger than the upload limit.")
     if not _is_fit(data):
@@ -266,56 +293,154 @@ def receive(db: Session, filename: str | None, data: bytes) -> Outcome:
 
     content_hash = hashlib.sha256(data).hexdigest()
     upload = db.scalar(select(Upload).where(Upload.content_hash == content_hash))
-    if upload is not None and upload.status is not UploadStatus.FAILED:
+    if (
+        upload is not None
+        and upload.race_id is not None
+        and upload.status is not UploadStatus.FAILED
+    ):
+        if race is not None and upload.race_id == race.id:
+            return Outcome(
+                filename, "duplicate", "Already part of this race.", upload.id, upload.race_id
+            )
+        other = db.get(Race, upload.race_id)
+        assert other is not None
         return Outcome(
             filename,
             "duplicate",
-            f"Identical to an upload you already have ({upload.filename or 'unnamed'}, "
-            f"uploaded {upload.uploaded_at:%d %b %Y}).",
-            upload_id=upload.id,
-            race_id=upload.race_id,
+            f"Identical to {upload.filename or 'a file'} in “{other.name}” "
+            f"({other.date.day} {other.date:%b %Y}), which you already have.",
+            upload.id,
+            other.id,
         )
-    if upload is None:
-        upload = Upload(filename=filename, content_hash=content_hash, status=UploadStatus.FAILED)
-        db.add(upload)
-        db.flush()
-        path = _stored_path(upload.id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        upload.stored_path = str(path)
-    # else: an identical file failed before. Parse it again: the parser may have improved,
-    # and the owner needs the real error, not "you already have this".
-
+    # Otherwise the file is new, an identical copy failed before (parse it again: the
+    # parser may have improved, and the owner needs the real error), or it was left over
+    # without a race by an earlier version of the app (adopt it).
     try:
         parsed = parse_fit(data)
     except FitParseError as exc:
-        upload.error = str(exc)
-        db.commit()
-        return Outcome(filename, "failed", str(exc), upload_id=upload.id)
+        return Outcome(filename, "failed", str(exc), upload.id if upload else None)
+    return Received(filename, data, content_hash, parsed, upload)
 
-    apply_parse(upload, parsed)
-    if parsed.kind is UploadKind.SINGLE_SPORT:
-        db.commit()
-        return Outcome(filename, "in_tray", "Waiting in the tray to be grouped.", upload.id)
 
-    race = create_race(db, parsed)
-    add_recordings(db, race, upload, parsed)
+def _store(db: Session, received: Received) -> Upload:
+    upload = received.upload
+    if upload is None:
+        upload = Upload(
+            filename=received.filename,
+            content_hash=received.content_hash,
+            status=UploadStatus.PARSED,
+        )
+        db.add(upload)
+        db.flush()
+    if not upload.stored_path or not Path(upload.stored_path).exists():
+        path = _stored_path(upload.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(received.data)
+        upload.stored_path = str(path)
+    return upload
+
+
+def _describe(race: Race, upload: Upload, parsed: ParsedFile, segment: Segment | None) -> str:
+    if parsed.kind is UploadKind.MULTISPORT:
+        legs = ", ".join(_SEGMENT_LABELS[s.segment] for s in parsed.sessions if s.segment)
+        return f"Added: {legs}."
+    others = [a for a in race.activities if a.segment == segment and a.upload_id != upload.id]
+    if others:
+        return f"Added as a second {segment} recording. The first one stays primary."
+    return f"Added as the {segment} leg."
+
+
+def attach_file(db: Session, race: Race, received: Received) -> Outcome:
+    """One file onto `race`. Commits per file, so one bad file doesn't undo the others."""
+    filename, parsed = received.filename, received.parsed
     try:
-        synthesize_transitions(db, race)  # a watch can skip recording a transition
+        segment = segment_for(race, parsed)
+        check_same_race(race, parsed)
     except GroupingError as exc:
-        # The file's own legs are implausibly far apart; keep the race without the guess.
-        log.warning("No derived transition for race %s: %s", race.id, exc)
-    enrich(db, race)
+        return Outcome(filename, "failed", str(exc), race_id=race.id)
+    first = not _has_recordings(race)
+
+    upload = _store(db, received)
+    new_file = received.upload is None and upload.stored_path
+    apply_parse(upload, parsed)
+    upload.race_id = race.id
+    if parsed.kind is UploadKind.SINGLE_SPORT and segment is None:
+        upload.status = UploadStatus.PARSED
+        db.commit()
+        return Outcome(
+            filename, "needs_segment", "Pick the leg this file belongs to.", upload.id, race.id
+        )
+    try:
+        add_recordings(db, race, upload, parsed, segment)
+        try:
+            synthesize_transitions(db, race)
+        except GroupingError:
+            if parsed.kind is not UploadKind.MULTISPORT:
+                raise
+            # A watch can skip recording a transition, and this file's own legs are
+            # implausibly far apart: keep the recordings without the guess.
+            log.warning("No derived transition for race %s", race.id, exc_info=True)
+    except GroupingError as exc:
+        db.rollback()
+        if new_file:
+            Path(new_file).unlink(missing_ok=True)
+        return Outcome(filename, "failed", str(exc), race_id=race.id)
+    if first:
+        _take_date_and_place(race, parsed)
+    message = _describe(race, upload, parsed, segment)
     db.commit()
-    return Outcome(filename, "created_race", f"Created race {race.id}.", upload.id, race.id)
+    return Outcome(filename, "attached", message, upload.id, race.id)
 
 
-def create_race(db: Session, parsed: ParsedFile) -> Race:
-    lat, lng = parsed.location
-    race = Race(date=parsed.local_date, location_lat=lat, location_lng=lng)  # private by default
-    db.add(race)
-    db.flush()
-    return race
+def receive(
+    db: Session,
+    files: list[tuple[str | None, bytes]],
+    race: Race | None = None,
+    race_type: RaceType | None = None,
+) -> tuple[Race | None, list[Outcome]]:
+    """POST /api/races/import (no `race`: one is made from the files) and
+    POST /api/races/{id}/uploads. Outcomes come back in the order the files were sent."""
+    outcomes: dict[int, Outcome] = {}
+    received: list[tuple[int, Received]] = []
+    seen: dict[str, str | None] = {}
+    for i, (filename, data) in enumerate(files):
+        result = check(db, race, filename, data)
+        if isinstance(result, Received) and result.content_hash in seen:
+            first = seen[result.content_hash] or "another file"
+            result = Outcome(filename, "duplicate", f"The same file as {first}, sent twice.")
+        if isinstance(result, Outcome):
+            outcomes[i] = result
+            continue
+        seen[result.content_hash] = filename
+        received.append((i, result))
+
+    created = race is None
+    if race is None:
+        if not received:
+            return None, _in_order(outcomes)
+        kind = race_type or infer_type([r.parsed for _, r in received])
+        race = Race(date=date.today(), race_type=kind)  # private by default
+        db.add(race)
+        db.commit()
+    had_recordings = _has_recordings(race)
+
+    for i, r in sorted(received, key=lambda item: item[1].parsed.start_time):
+        outcomes[i] = attach_file(db, race, r)
+    done = [o for o in outcomes.values() if o.result in ("attached", "needs_segment")]
+    if created and not done:
+        db.delete(race)  # nothing fitted: don't leave an empty race behind
+        db.commit()
+        for o in outcomes.values():
+            o.race_id = None
+        return None, _in_order(outcomes)
+    if any(o.result == "attached" for o in done):
+        refresh(db, race, with_weather=not had_recordings)
+        db.commit()
+    return race, _in_order(outcomes)
+
+
+def _in_order(outcomes: dict[int, Outcome]) -> list[Outcome]:
+    return [outcomes[i] for i in sorted(outcomes)]
 
 
 def add_recordings(
@@ -417,17 +542,26 @@ def enrich(db: Session, race: Race, *, with_weather: bool = True) -> None:
         weather.refresh(race)
 
 
+def refresh(db: Session, race: Race, *, with_weather: bool = False) -> None:
+    """Everything that follows from the recordings, after they changed: classification,
+    weather when asked, and a prefilled official result."""
+    enrich(db, race, with_weather=with_weather)
+    results.prefill(race)
+
+
 def reimport(db: Session, upload: Upload) -> str:
     """Re-parse a stored original with the current parser (`cli reimport`)."""
     parsed = parse_fit(read_original(upload))
     apply_parse(upload, parsed)
+    if upload.status is UploadStatus.FAILED:
+        upload.status = UploadStatus.PARSED
     race = db.get(Race, upload.race_id) if upload.race_id is not None else None
-    if race is not None:
+    if race is not None and upload.status is UploadStatus.GROUPED:
         segment = db.scalar(
             select(RecordedActivity.segment).where(RecordedActivity.upload_id == upload.id)
         )
         add_recordings(db, race, upload, parsed, segment)
         synthesize_transitions(db, race)
-        enrich(db, race, with_weather=False)
+        refresh(db, race)
     db.commit()
     return "updated"

@@ -1,13 +1,15 @@
 """Race detail, track and laps (race-detail.md), and race writes (races-and-results.md)."""
 
 from datetime import date
+from pathlib import Path
 
 from fastapi import HTTPException, Query, status
-from sqlalchemy import select, update
+from sqlalchemy import select
+from sqlalchemy.orm import object_session
 
 from app.access import DB, CurrentViewer, Viewer, owner_router, reader_router, visible_race
 from app.models import LapSplit, OfficialResult, Race, RecordedActivity, Upload
-from app.models.enums import SEGMENTS, ClassificationSource, Segment, UploadStatus
+from app.models.enums import SEGMENTS, ClassificationSource, RaceType, Segment, race_segments
 from app.routers.photos import photo_out
 from app.schemas.races import (
     CategoryRef,
@@ -21,12 +23,13 @@ from app.schemas.races import (
     RaceDetailOwner,
     RaceDetailPublic,
     RacePatch,
+    RaceUpload,
     Recording,
     SegmentPublic,
     TrackSegment,
     Weather,
 )
-from app.services import classify, gear, geo, markdown, photos, results
+from app.services import classify, gear, geo, imports, markdown, photos, results
 
 read = reader_router()
 write = owner_router()
@@ -66,11 +69,12 @@ def _segment_fields(a: RecordedActivity) -> dict:
     }
 
 
-def official_out(result: OfficialResult | None) -> OfficialResultOut | None:
+def official_out(race: Race) -> OfficialResultOut | None:
+    result = race.official_result
     if result is None:
         return None
     out = OfficialResultOut.model_validate(result)
-    remainder = results.remainder_split(result)
+    remainder = results.remainder_split(race, result)
     if remainder:
         setattr(out, f"{remainder[0]}_time", remainder[1])
         out.derived_split = Segment(remainder[0])
@@ -87,6 +91,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
         "id": race.id,
         "name": race.name,
         "date": race.date,
+        "race_type": race.race_type,
         "location_name": race.location_name,
         "location_lat": race.location_lat,
         "location_lng": race.location_lng,
@@ -99,7 +104,7 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
             humidity_pct=race.weather_humidity_pct,
             conditions=race.weather_conditions,
         ),
-        "official_result": official_out(race.official_result),
+        "official_result": official_out(race),
         "segments": [SegmentPublic(**_segment_fields(a)) for a in ordered_primaries(race)],
         "fueling": [
             FuelingOut.model_validate(f)
@@ -131,9 +136,20 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
             detail=race.classification_detail,
             classified_at=race.classified_at,
         ),
+        marked_complete=race.marked_complete,
+        missing_segments=race.missing_segments(),
+        is_incomplete=race.is_incomplete,
+        uploads=[RaceUpload.model_validate(u) for u in race_uploads(race)],
         recordings=recordings,
         completeness=results.completeness(race),
     )
+
+
+def race_uploads(race: Race) -> list[Upload]:
+    db = object_session(race)
+    assert db is not None
+    query = select(Upload).where(Upload.race_id == race.id)
+    return list(db.scalars(query.order_by(Upload.detected_start_time.nulls_last(), Upload.id)))
 
 
 def owner_detail(db: DB, race_id: int) -> RaceDetailOwner:
@@ -187,7 +203,11 @@ def get_laps(race_id: int, db: DB, viewer: CurrentViewer, sport: str | None = No
 
 @write.post("/races", response_model=RaceDetailOwner, status_code=status.HTTP_201_CREATED)
 def create_race(body: RaceCreate, db: DB):
-    race = Race(date=body.date or date.today(), name=body.name or "Untitled race")
+    race = Race(
+        date=body.date or date.today(),
+        name=body.name or "Untitled race",
+        race_type=body.race_type,
+    )
     db.add(race)
     db.commit()
     return owner_detail(db, race.id)
@@ -197,9 +217,11 @@ def create_race(body: RaceCreate, db: DB):
 def patch_race(race_id: int, body: RacePatch, db: DB):
     race = visible_race(db, Viewer(is_owner=True), race_id)
     values = body.model_dump(exclude_unset=True)
-    for field in ("name", "date"):
+    for field in ("name", "date", "race_type", "marked_complete"):
         if field in values and values[field] is None:
             raise HTTPException(422, f"{field} can't be empty.")
+    if "race_type" in values and values["race_type"] != race.race_type:
+        change_type(db, race, values.pop("race_type"))
     if "race_category_id" in values:
         category_id = values.pop("race_category_id")
         if category_id is None:  # clear the override and re-run
@@ -214,18 +236,33 @@ def patch_race(race_id: int, body: RacePatch, db: DB):
     return owner_detail(db, race_id)
 
 
+def change_type(db: DB, race: Race, race_type: RaceType) -> None:
+    """A race type only changes when every recording fits the new one. (Derived
+    transitions need two legs, so a race that can become single-sport has none.)"""
+    allowed = set(race_segments(race_type))
+    misfits = sorted({a.segment for a in race.activities} - allowed, key=SEGMENTS.index)
+    if misfits:
+        names = ", ".join(results.SPLIT_LABELS[s] for s in misfits)
+        raise HTTPException(
+            422,
+            f"This race has {names} recordings, which a {imports.type_label(race_type)} "
+            "doesn't have. Remove those files first.",
+        )
+    race.race_type = race_type
+    classify.classify_race(db, race)
+    results.normalise_for_type(race)
+
+
 @write.delete("/races/{race_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_race(race_id: int, db: DB):
-    """Its uploads go back to the tray instead of being deleted."""
+    """Its uploads and their stored files go with it."""
     race = visible_race(db, Viewer(is_owner=True), race_id)
-    db.execute(
-        update(Upload)
-        .where(Upload.race_id == race.id)
-        .values(race_id=None, status=UploadStatus.PARSED)
-    )
+    files = imports.discard_uploads(db, race)
     photo_ids = [p.id for p in race.photos]
     db.delete(race)
     db.commit()
+    for path in files:
+        Path(path).unlink(missing_ok=True)
     for photo_id in photo_ids:
         photos.remove(photo_id)
 
@@ -235,7 +272,7 @@ def put_official_result(race_id: int, body: OfficialResultIn, db: DB):
     race = visible_race(db, Viewer(is_owner=True), race_id)
     result = race.official_result or OfficialResult(race_id=race.id)
     try:
-        results.apply_result(result, body.model_dump(exclude_unset=True))
+        results.apply_result(race, result, body.model_dump(exclude_unset=True))
     except results.ResultError as exc:
         db.rollback()
         raise HTTPException(422, str(exc)) from exc

@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.db import utcnow
 from app.models import Race, RaceCategory
-from app.models.enums import SPORT_SEGMENTS, CategoryKind, ClassificationSource, Segment
+from app.models.enums import (
+    SPORT_SEGMENTS,
+    CategoryKind,
+    ClassificationSource,
+    RaceType,
+    Segment,
+)
 
 
 def _km(lo: float | None, hi: float | None) -> tuple[float | None, float | None]:
@@ -112,6 +118,13 @@ def classify(distances: dict[Segment, float | None], categories: list[RaceCatego
 
 def classify_race(db: Session, race: Race) -> None:
     """Rules 1-7: updates auto_category_id always, race_category_id only when auto."""
+    if race.race_type is not RaceType.TRIATHLON:
+        # The categories are triathlon distances; a single-sport race has none.
+        race.race_category_id = race.auto_category_id = None
+        race.classification_detail = None
+        race.classification_source = ClassificationSource.UNCLASSIFIED
+        race.classified_at = utcnow()
+        return
     primaries = race.primary_activities()
     distances = {s: (a.distance_m if (a := primaries.get(s)) else None) for s in SPORT_SEGMENTS}
     categories = list(db.scalars(select(RaceCategory)))

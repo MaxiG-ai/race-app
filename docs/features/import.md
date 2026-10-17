@@ -4,9 +4,12 @@
 
 ## Goal
 
-The owner drops one or more FIT files onto the import page. A multisport file becomes a
-race straight away. Single-sport files wait in a tray to be grouped
-([grouping](grouping.md)). Every file is kept as it was uploaded, so the whole collection can be
+The owner drops the FIT files of a race onto its race page, the same page where everything
+else about the race is edited ([races-and-results](races-and-results.md#ui)). On the
+new-race page the drop creates the race; on an existing race the files are added to it. A
+multisport file fills every leg; single-sport files fill one leg each
+([grouping](grouping.md)). There is no staging tray: every file belongs to a race from the
+moment it is dropped. Every file is kept as it was uploaded, so the whole collection can be
 re-imported whenever the parser improves.
 
 This is the highest-risk feature: everything downstream depends on what it produces. Build it
@@ -21,21 +24,22 @@ Owner only. Visitors never see uploads, stored files, `raw_data` or parse errors
 ## Data
 
 ```
-upload                        staging row per file; exists before it belongs to a race
+upload                        one row per file, always on the race it was dropped onto
   id (PK)
   source              enum: fit_upload, strava
   filename            nullable (null for Strava)
   stored_path         nullable — original file on the uploads volume
   content_hash        sha256, unique — the same file can't be uploaded twice
   external_id         nullable, Strava activity id, unique when set
-  status              enum: parsed, grouped, failed
+  status              enum: parsed (waits for the owner to pick its leg), grouped, failed
+                      (failed: rows from before 0004 only; failed files are no longer kept)
   kind                enum: multisport, single_sport
   detected_sport      enum: swim, bike, run, other — null for multisport
   detected_start_time / detected_end_time
   detected_distance_m
   summary             jsonb — parse preview so the tray renders without re-reading files
   error               nullable, parse failure message
-  race_id             FK nullable — set once grouped
+  race_id             FK nullable — null only on rows left over from the old tray
   uploaded_at
 
 recorded_activity             one row per segment per upload
@@ -85,20 +89,41 @@ lap_split
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/uploads` | multipart, one or many files; parse, hash, store; auto-group multisport |
-| `GET` | `/api/uploads` | the tray (`?status=`), with suggested groupings, see [grouping](grouping.md) |
-| `DELETE` | `/api/uploads/{id}` | discard an upload and its stored file |
-| `POST` | `/api/races/{id}/attach` | attach uploads to an existing race |
+| `POST` | `/api/races/import` | multipart files (+ optional `race_type`): a new race from them |
+| `POST` | `/api/races/{id}/uploads` | multipart files: add them to the race |
+| `POST` | `/api/races/{id}/attach` | `{segments: {upload_id: segment}}`: file the uploads that wait for a leg |
+| `DELETE` | `/api/uploads/{id}` | remove a file from its race, with its recordings and stored original |
 
-The response to `POST /uploads` lists each file's outcome: `created race <id>`,
-`in tray`, `duplicate of upload <id>`, or `failed: <reason>`.
+Both upload endpoints return `{outcomes, race}`. Each outcome is `attached`,
+`needs_segment` (the file doesn't say its sport: pick the leg), `duplicate` (with the race
+that already has it) or `failed: <reason>`, in the order the files were sent. `race` is the
+owner detail, or null when `/races/import` made no race because nothing fitted.
 
 ## UI
 
-`admin/import.html`: a drop zone for multiple files, a per-file result line as each one is
-parsed, and the grouping tray below it.
+No page of its own. The race page (`admin/race-edit.html`) starts with the race's files: a
+drop zone, a result line per dropped file, and the list of files with the legs each one
+fills ([races-and-results](races-and-results.md#ui)). `/admin/import` redirects to the
+new-race page.
 
 ## Rules
+
+### Which race a file goes to
+
+- **New race.** The owner picks a race type, or lets the files decide: files that all
+  name one sport make that single-sport race, anything else is a triathlon (an unknown
+  sport is asked about, not guessed). The race starts as `"Untitled race"`,
+  `is_public = false`. If no file fits, no race is made.
+- **Every file must fit the race.** A multisport file needs a triathlon; a single-sport
+  file's sport must be a leg of the race type; and it must have been recorded within
+  8 hours of the race's other recordings (else: *"recorded on 15 Aug 2026, hours away
+  from this race's other recordings. It looks like a different race."*). A file that
+  doesn't fit is refused and nothing of it is written.
+- **First recording.** The race takes its date (local, Trap 11) and, if it has none, its
+  location from its first recording, so a race created by hand can get its file later.
+- **Per file.** Each file commits on its own, so one bad file doesn't undo the others.
+  Enrichment and the [prefilled result](races-and-results.md#prefilled-results) run once
+  per drop, after the files.
 
 ### Import flow (multisport)
 
@@ -112,16 +137,17 @@ parsed, and the grouping tray below it.
 3. Bucket `record`s into sessions with half-open, clamped windows
    ([Trap 3](../reference/fit-files.md#trap-3)). Orphans are dropped and counted
    ([Trap 4](../reference/fit-files.md#trap-4)); the count is kept in `summary`.
-4. Create the race: `date` = first session start converted to the start location's local
-   timezone ([Trap 11](../reference/fit-files.md#trap-11)), location = bounding-box
-   centroid, name `"Untitled race"`, `is_public = false`.
+4. File it under the race: `date` = first session start converted to the start
+   location's local timezone ([Trap 11](../reference/fit-files.md#trap-11)), location =
+   bounding-box centroid (see above).
 5. Persist 5 `recorded_activity` rows and their laps. **Totals come from `session`, never
    from summing laps** ([Trap 1](../reference/fit-files.md#trap-1)). Mark trailing partial
    laps as `is_partial`. Derive pace from distance ÷ time, never from `avg_speed`.
 6. Compute `progress_series`, run [gear detection](gear.md#rules),
    [classification](classification.md#rules) and [weather](weather.md#rules). If
    enrichment fails, log it and still return the race; an enrichment failure never fails the import.
-7. Return the race id so the page can link straight to it.
+7. Prefill the official result from the recordings
+   ([races-and-results](races-and-results.md#prefilled-results)) and return the race.
 
 ### Time in zone
 
@@ -143,11 +169,15 @@ are ignored.
 ### Deduplication
 
 - The same bytes produce the same `content_hash`, so re-uploading returns the existing
-  upload. It doesn't create a second one.
-- The UI **says** "identical to an upload you already have (<filename>, <date>)" rather
-  than silently dropping a file the owner chose on purpose. This matters for Strava
-  downloads, where three "different" activities can be the same file
+  upload. It doesn't create a second one. The same file twice in one drop counts once.
+- The UI **says** "Already part of this race", or "Identical to <filename> in <race>
+  (<date>), which you already have" with a link to that race, rather than silently
+  dropping a file the owner chose on purpose. This matters for Strava downloads, where
+  three "different" activities can be the same file
   ([fit-files](../reference/fit-files.md#strava-exports)).
+- A file that fails to parse is not kept, so its identical copy reports the same failure
+  instead of "you already have this". An upload left without a race (the old tray) is
+  adopted by the race it is dropped onto.
 
 ### Storage and limits
 
@@ -165,7 +195,11 @@ Against the synthetic fixtures ([fit-files](../reference/fit-files.md#testing-wi
 - The boundary fixture has no record in two segments; the Garmin fixture reports exactly one orphan (Traps 3, 4).
 - `elapsed_time ≠ moving_time` on the Garmin bike (Trap 5).
 - The early-start fixture gets the local date, not the UTC date (Trap 11).
-- Uploading the same file twice gives one `upload` row and a "duplicate" result.
+- Uploading the same file twice gives one `upload` row and a "duplicate" result that
+  names the race that has it.
+- One bike file makes a bike race; with `race_type = triathlon` it makes a triathlon
+  missing four legs. A bike file on a run race, a multisport file on a single-sport race
+  and a file from another day are refused, and nothing of them is stored.
 - A file with the wrong session sequence writes nothing.
 - A file without a recorded T2 (`missing_t2.fit`) gets a derived T2 from the gap.
 - Garmin sessions carry the zone seconds listed in the fixture README (HR everywhere, power

@@ -33,7 +33,6 @@ def _routes(methods):
 WRITE_ROUTES = sorted(_routes(WRITE_METHODS))
 READ_ROUTES = sorted(r for r in _routes({"get"}) if r[1] != "/api/auth/me")
 OWNER_ONLY_READS = {
-    "/api/uploads",
     "/api/gear",
     "/api/gear/unknown-devices",
     "/api/gear/last-used-shoes",
@@ -123,6 +122,7 @@ def test_public_detail_has_exactly_the_public_keys(anon, db, public_mode):
             "id",
             "name",
             "date",
+            "race_type",
             "location_name",
             "location_lat",
             "location_lng",
@@ -154,7 +154,17 @@ def test_public_list_item_keys(anon, db, public_mode):
 def test_owner_gets_completeness_and_recordings(owner, db):
     make_race(db, times={"swim": 600})
     body = owner.get("/api/races/1").json()
-    assert "completeness" in body and "recordings" in body
+    assert {"completeness", "recordings", "uploads", "is_incomplete"} <= set(body)
+
+
+def test_incomplete_tag_is_owner_only(anon, owner, db, public_mode):
+    make_race(db, public=True, times={"swim": 600})
+    assert owner.get("/api/races").json()["items"][0]["is_incomplete"] is True
+    item = anon.get("/api/races").json()["items"][0]
+    assert "is_incomplete" not in item
+    body = anon.get("/api/races/1").json()
+    for key in ("is_incomplete", "missing_segments", "marked_complete", "uploads"):
+        assert key not in body
 
 
 def test_track_is_simplified_for_visitors(anon, db, public_mode):
