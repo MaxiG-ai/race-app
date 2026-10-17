@@ -5,40 +5,42 @@ import { api, me } from "./api.js";
 import { DASH, SEGMENTS, SEGMENT_LABELS, duration, esc } from "./format.js";
 
 /**
- * Render the site header (and, for the owner, the owner bar) at the top of <body>.
+ * Render the navbar at the top of <body>: the home mark (always the timeline at "/"),
+ * the page links, and, for the owner, the owner tools and log out.
  * @param {{edit?: string}} [links]  an extra "Edit" link for the current page
  * @returns {Promise<{owner: boolean, site_mode: string, site: import("./types.js").Site}>}
  */
 export async function header(links = {}) {
   const [who, site] = await Promise.all([me(), api("/site")]);
-  const head = document.createElement("header");
-  head.className = "page site-header";
-  head.style.paddingBottom = "0";
-  head.innerHTML = `<a class="site-title" href="/">${esc(site.site_title)}</a>
-    ${site.athlete_name ? `<span class="muted">${esc(site.athlete_name)}</span>` : ""}
-    <nav class="site-nav" aria-label="Site"><a href="/">Races</a><a href="/trends">Trends</a></nav>`;
-  head.querySelectorAll(".site-nav a").forEach((a) => {
-    if (a.getAttribute("href") === location.pathname) a.setAttribute("aria-current", "page");
-  });
-  document.body.prepend(head);
-  if (who.owner) {
-    const bar = document.createElement("nav");
-    bar.className = "owner-bar";
-    bar.setAttribute("aria-label", "Owner");
-    bar.innerHTML = `
-      ${links.edit ? `<a href="${esc(links.edit)}">Edit</a>` : ""}
-      <a href="/admin/import">Import</a>
-      <a href="/admin/gear">Gear</a>
-      <a href="/admin/site">Site</a>
-      <span class="spacer"></span>
+  const link = (/** @type {string} */ href, /** @type {string} */ label) =>
+    `<a href="${esc(href)}"${location.pathname === href ? ' aria-current="page"' : ""}>${esc(label)}</a>`;
+  const owner = who.owner
+    ? `<span class="divider" role="separator"></span>
+      ${links.edit ? link(links.edit, "Edit") : ""}
+      ${link("/admin/import", "Import")}${link("/admin/gear", "Gear")}${link("/admin/site", "Site")}`
+    : "";
+  const nav = document.createElement("header");
+  nav.className = "navbar";
+  nav.innerHTML = `<div class="navbar-inner">
+    <a class="home" href="/"${location.pathname === "/" ? ' aria-current="page"' : ""}
+       aria-label="${esc(site.site_title)}, home timeline">
+      <span class="home-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="home-text">
+        <span class="home-title">${esc(site.site_title)}</span>
+        ${site.athlete_name ? `<span class="home-sub">${esc(site.athlete_name)}</span>` : ""}
+      </span>
+    </a>
+    <nav class="navbar-links" aria-label="Site">${link("/trends", "Trends")}${owner}</nav>
+    ${who.owner ? `<div class="navbar-end">
       <span class="muted">${who.site_mode === "public" ? "Public site" : "Private site"}</span>
-      <button class="link" type="button" data-logout>Log out</button>`;
-    bar.querySelector("[data-logout]")?.addEventListener("click", async () => {
-      await api("/auth/logout", { method: "POST" });
-      location.href = "/";
-    });
-    document.body.prepend(bar);
-  }
+      <button class="link" type="button" data-logout>Log out</button>
+    </div>` : ""}
+  </div>`;
+  nav.querySelector("[data-logout]")?.addEventListener("click", async () => {
+    await api("/auth/logout", { method: "POST" });
+    location.href = "/";
+  });
+  document.body.prepend(nav);
   return { ...who, site };
 }
 

@@ -22,18 +22,46 @@ p { margin: 0 0 0.75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
   white-space: nowrap; }
 
-/* Header and owner bar */
-.site-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem;
-  margin-bottom: 1rem; }
-.site-header a { text-decoration: none; }
-.site-title { font-weight: 650; font-size: 1.125rem; }
-.site-nav { margin-left: auto; display: flex; gap: 0.75rem; font-size: var(--text-sm); }
-.site-nav a { color: var(--ink-muted); }
-.site-nav a[aria-current="page"] { color: var(--ink); font-weight: 600; }
-.owner-bar { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; padding: 0.375rem var(--gutter);
-  border-bottom: 1px solid var(--hairline); background: var(--surface); font-size: var(--text-sm); }
-.owner-bar a, .owner-bar button { color: var(--ink-muted); }
-.owner-bar .spacer { flex: 1; }
+/* Navbar: home mark on the left (always the timeline), page links, owner tools on the right.
+   The mark reuses the swim/bike/run segment bar, the app's one recurring motif. */
+.navbar { position: sticky; top: 0; z-index: 10; background: var(--surface);
+  border-bottom: 1px solid var(--hairline); margin-bottom: 1rem; }
+.navbar-inner { max-width: var(--measure); margin: 0 auto; padding: 0 var(--gutter);
+  display: flex; align-items: center; gap: 0.25rem 1rem; min-height: 3.25rem; flex-wrap: wrap; }
+.navbar a, .navbar button { text-decoration: none; }
+.home { display: flex; align-items: center; gap: 0.625rem; padding: 0.375rem 0.5rem 0.375rem 0;
+  margin-right: 0.5rem; border-radius: var(--radius); }
+.home-mark { display: flex; align-items: flex-end; gap: 2px; height: 1.5rem; }
+.home-mark i { display: block; width: 5px; border-radius: 1px;
+  transition: height 0.18s ease-out; }
+.home-mark i:nth-child(1) { height: 55%; background: var(--swim); }
+.home-mark i:nth-child(2) { height: 100%; background: var(--bike); }
+.home-mark i:nth-child(3) { height: 75%; background: var(--run); }
+.home:hover .home-mark i:nth-child(1), .home[aria-current="page"] .home-mark i:nth-child(1) { height: 85%; }
+.home:hover .home-mark i:nth-child(3), .home[aria-current="page"] .home-mark i:nth-child(3) { height: 100%; }
+.home-text { display: flex; flex-direction: column; line-height: 1.15; }
+.home-title { font-weight: 650; font-size: 1.0625rem; letter-spacing: -0.01em; }
+.home-sub { font-size: var(--text-xs); color: var(--ink-muted); }
+.navbar-links { display: flex; align-items: stretch; align-self: stretch; gap: 0.25rem;
+  font-size: var(--text-sm); }
+.navbar-links a, .navbar-end button { display: flex; align-items: center; padding: 0 0.625rem;
+  color: var(--ink-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.navbar-links a:hover, .navbar-end button:hover { color: var(--ink); }
+.navbar-links a[aria-current="page"] { color: var(--ink); font-weight: 600;
+  border-bottom-color: var(--ink); }
+.navbar-links .divider { width: 1px; background: var(--hairline); margin: 0.875rem 0.375rem; }
+.navbar-end { margin-left: auto; display: flex; align-items: center; gap: 0.75rem;
+  font-size: var(--text-sm); }
+.navbar-end button.link { padding: 0.25rem 0.5rem; border-radius: var(--radius); }
+@media (max-width: 36rem) {
+  .navbar-inner { padding-bottom: 0; }
+  .navbar-end { order: 2; margin-left: auto; }
+  .navbar-links { order: 3; flex: 1 0 100%; align-self: auto; min-height: 2.5rem;
+    overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--gutter));
+    padding: 0 calc(var(--gutter) - 0.625rem); }
+  .navbar-links a { white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) { .home-mark i { transition: none; } }
 
 /* Controls */
 button, .button {
