@@ -10,7 +10,7 @@ from app.access import DB, CurrentViewer, reader_router, visible_race, visible_r
 from app.models import Race
 from app.routers.timeline import list_item
 from app.schemas.races import RaceListItem
-from app.services import comparison
+from app.services import comparison, strava
 
 read = reader_router()
 
@@ -25,6 +25,9 @@ class Comparison(BaseModel):
     deltas: dict[str, int | None]
     conditions: list[dict[str, Any]]
     fueling: list[dict[str, Any]]
+    # "View on Strava" per leg recorded from Strava, as the brand guidelines require
+    # wherever Strava data is shown: {"a": {segment: url}, "b": {...}}.
+    strava_urls: dict[str, dict[str, str]]
 
 
 @read.get("/races/{a_id}/compare/{b_id}", response_model=Comparison)
@@ -34,7 +37,20 @@ def compare(a_id: int, b_id: int, db: DB, viewer: CurrentViewer):
         body = comparison.compare(a, b, owner=viewer.is_owner)
     except comparison.NotComparable as exc:
         raise HTTPException(422, str(exc)) from exc
-    return Comparison(a=list_item(a), b=list_item(b), **body)
+    return Comparison(
+        a=list_item(a),
+        b=list_item(b),
+        strava_urls={"a": _strava_urls(a), "b": _strava_urls(b)},
+        **body,
+    )
+
+
+def _strava_urls(race: Race) -> dict[str, str]:
+    return {
+        str(segment): url
+        for segment, activity in race.primary_activities().items()
+        if (url := strava.activity_url(activity))
+    }
 
 
 @read.get("/races/{race_id}/comparable", response_model=list[RaceListItem])

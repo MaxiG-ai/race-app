@@ -56,7 +56,9 @@ def strava_unlink() -> None:
         owner = db.scalar(select(Owner))
         if owner is None or owner.strava_athlete_id is None:
             sys.exit("No Strava athlete is linked.")
-        strava.disconnect(db)
+        if not strava.disconnect(db):
+            print("Strava didn't confirm the revocation: remove this site under My Apps in")
+            print("the athlete's Strava settings.")
         owner = db.scalar(select(Owner))
         owner.strava_athlete_id = None  # type: ignore[union-attr]
         db.query(OwnerSession).delete()

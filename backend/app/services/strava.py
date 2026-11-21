@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -52,9 +54,16 @@ _LEG_ORDER = {Sport.SWIM: 0, Sport.BIKE: 1, Sport.RUN: 2}
 TAGLINE_PREFIX = "🏁 Race #"
 _TAGLINE_LINE = re.compile(r"^🏁 Race #\d+ of \d{4}\b")
 PURGED_HINT = "Strava data was deleted"
+# Key of the PostgreSQL advisory lock that keeps two pulls from importing the same
+# activities at once ("STRAV").
+PULL_LOCK = 0x5354524156
 
 
 class NotConnected(StravaError):
+    pass
+
+
+class PullRunning(StravaError):
     pass
 
 
@@ -87,32 +96,82 @@ def connect(db: Session, token: dict[str, Any], granted: str) -> StravaAccount:
     return row
 
 
-def access_token(db: Session, row: StravaAccount) -> str:
-    """A valid access token, refreshed when it is about to expire. Strava may rotate the
-    refresh token on every refresh; the newest one is stored at once."""
-    if row.expires_at - utcnow() > REFRESH_MARGIN:
+def access_token(db: Session, row: StravaAccount, *, refused: str | None = None) -> str:
+    """A valid access token, refreshed when it is about to expire, or when Strava just
+    answered 401 to the access token `refused`. Strava may rotate the refresh token on
+    every refresh; the newest one is stored at once.
+
+    The row is locked while refreshing: a rotated refresh token is refused the second time,
+    so a pull and a webhook check refreshing at once would otherwise read as revocation.
+    Whoever waited for the lock uses the token the other one stored."""
+
+    def still_good(r: StravaAccount) -> bool:
+        if refused is not None:
+            return r.access_token != refused
+        return r.expires_at - utcnow() > REFRESH_MARGIN
+
+    if still_good(row):
         return row.access_token
+    locked = db.scalar(
+        select(StravaAccount).with_for_update().execution_options(populate_existing=True)
+    )
+    if locked is None:
+        db.rollback()
+        raise NotConnected("Strava isn't connected.")
+    if still_good(locked):
+        db.commit()  # another request refreshed it while this one waited
+        return locked.access_token
     settings = get_settings()
+    sent = locked.refresh_token
     try:
         body = strava_api.refresh_token(
-            settings.strava_client_id, settings.strava_client_secret, row.refresh_token
+            settings.strava_client_id, settings.strava_client_secret, sent
         )
     except StravaAuthError:
-        revoked(db)
+        revoked(db, sent)
         raise
-    row.access_token = body["access_token"]
-    row.refresh_token = body.get("refresh_token") or row.refresh_token
-    row.expires_at = datetime.fromtimestamp(int(body["expires_at"]), tz=utcnow().tzinfo)
+    except StravaError:
+        db.rollback()  # Strava busy or unreachable: nothing was revoked
+        raise
+    locked.access_token = body["access_token"]
+    locked.refresh_token = body.get("refresh_token") or locked.refresh_token
+    locked.expires_at = datetime.fromtimestamp(int(body["expires_at"]), tz=utcnow().tzinfo)
+    locked.needs_reconnect = False
     db.commit()
-    return row.access_token
+    return locked.access_token
 
 
-def revoked(db: Session) -> None:
+def revoked(db: Session, refused: str | None = None) -> None:
     """Strava refused our token: the athlete revoked access. Their Strava data goes
-    (Strava API Agreement: delete on revocation); logging in with Strava again reconnects."""
+    (Strava API Agreement: delete on revocation); logging in with Strava again reconnects.
+    `refused`: the refresh token Strava refused. Nothing is deleted if a newer one has been
+    stored since, which means another request renewed the connection."""
     db.rollback()
+    if refused is not None:
+        current = db.scalar(select(StravaAccount.refresh_token))
+        if current is not None and current != refused:
+            return
     log.warning("Strava access was revoked; deleting Strava data")
     purge(db)
+
+
+def _after_refusal(db: Session, token: str) -> None:
+    """A data call answered 401 to an access token that hadn't expired. The athlete may have
+    revoked access on strava.com: renew the token now, so a refusal deletes the Strava data
+    at once instead of whenever the token would next expire."""
+    db.rollback()
+    row = account(db)
+    if row is None:
+        return
+    try:
+        access_token(db, row, refused=token)
+    except StravaAuthError:
+        return  # refused: revoked() deleted the Strava data
+    except StravaError:
+        row = account(db)
+        if row is not None:
+            row.needs_reconnect = True
+            db.commit()
 
 
 def purge(db: Session) -> list[str]:
@@ -126,10 +185,8 @@ def purge(db: Session) -> list[str]:
             with db.begin_nested():
                 path = imports.remove_upload(db, upload)
         except GroupingError:
-            # The legs left behind don't make derived transitions; drop the recordings anyway.
             path = upload.stored_path
-            db.execute(delete(RecordedActivity).where(RecordedActivity.upload_id == upload.id))
-            db.delete(upload)
+            _drop_without_transitions(db, upload)
         if path:
             paths.append(path)
     db.execute(delete(RecordedActivity).where(RecordedActivity.source == UploadSource.STRAVA))
@@ -141,18 +198,49 @@ def purge(db: Session) -> list[str]:
     return paths
 
 
-def disconnect(db: Session) -> None:
-    """Revoke our access at Strava, then delete the Strava data."""
+def _drop_without_transitions(db: Session, upload: Upload) -> None:
+    """`remove_upload` for when the legs left behind don't make derived transitions: the
+    recordings go anyway, each leg keeps a primary, the derived transitions go without
+    being re-derived, and the prefilled result follows what is left."""
+    race = db.get(Race, upload.race_id) if upload.race_id is not None else None
+    if race is None:
+        db.execute(delete(RecordedActivity).where(RecordedActivity.upload_id == upload.id))
+    else:
+        gone = [a for a in race.activities if a.upload_id == upload.id or a.is_derived]
+        for a in gone:
+            race.activities.remove(a)
+        db.flush()
+        for segment in {a.segment for a in gone if not a.is_derived}:
+            imports.reconcile_primary(db, race, segment)
+        imports.refresh(db, race)
+    db.delete(upload)
+
+
+def disconnect(db: Session) -> bool:
+    """Revoke our access at Strava, then delete the Strava data. Returns whether Strava
+    confirmed the revocation; the data is deleted either way."""
     row = account(db)
+    revoked_at_strava = True
     if row is not None:
-        settings = get_settings()
-        strava_api.revoke(
-            settings.strava_client_id,
-            settings.strava_client_secret,
-            row.refresh_token,
-            row.access_token,
-        )
+        access: str | None = row.access_token
+        try:
+            # A fresh token, so the legacy fallback isn't sent one that has expired.
+            access = access_token(db, row)
+        except StravaAuthError:
+            access = None  # Strava refused the token: its access is already gone
+        except StravaError:
+            pass
+        row = account(db)
+        if row is not None and access is not None:
+            settings = get_settings()
+            revoked_at_strava = strava_api.revoke(
+                settings.strava_client_id,
+                settings.strava_client_secret,
+                row.refresh_token,
+                access,
+            )
     purge(db)
+    return revoked_at_strava
 
 
 def unpublish_strava_races(db: Session) -> list[int]:
@@ -287,6 +375,8 @@ class PullResult:
     # Something was left for later (waiting for consent): the next pull must look here again.
     retry_later: bool = False
     message: str = ""
+    # Descriptions this pull already read, so the tagline doesn't read them again.
+    descriptions: dict[int, str | None] = field(default_factory=dict)
 
 
 class _Budget(Exception):
@@ -313,7 +403,9 @@ def _list_races(token: str, after: int | None, result: PullResult) -> list[dict[
 
 def _target_race(db: Session, chain: list[dict[str, Any]], known: dict[int, StravaActivity]):
     """Where a chain's new legs go: the race its other legs were pulled into, or a race
-    that already has recordings at that time (from a FIT file). None: a new race.
+    that already has recordings at that time (from a FIT file), or a race of its type and
+    day with no recordings at all (its Strava legs were deleted by a disconnect, and the
+    owner's name, result and photos stayed). None: a new race.
     `False`: its race was deleted by the owner, so it isn't pulled again."""
     for a in chain:
         row = known.get(int(a["id"]))
@@ -335,13 +427,22 @@ def _target_race(db: Session, chain: list[dict[str, Any]], known: dict[int, Stra
     for rec in candidates:
         if rec.end_time > start:
             return rec.race
+    same_day = db.scalars(
+        select(Race)
+        .where(Race.date == strava_map.local_date(chain[0]), Race.race_type == race_type_of(chain))
+        .order_by(Race.id)
+    )
+    for race in same_day:
+        if not any(not a.is_derived for a in race.activities):
+            return race
     return None
 
 
-def _fetch(token: str, summary: dict[str, Any]) -> Received | Outcome:
+def _fetch(token: str, summary: dict[str, Any], result: PullResult) -> Received | Outcome:
     activity_id = int(summary["id"])
     _spend()
     detail = strava_api.activity(token, activity_id)
+    result.descriptions[activity_id] = detail.get("description")
     _spend()
     laps = strava_api.laps(token, activity_id)
     _spend()
@@ -378,9 +479,27 @@ def _remember(
     return row
 
 
+@contextmanager
+def _one_pull_at_a_time(db: Session) -> Iterator[None]:
+    """Two pulls at once would both import the same new activities. A session-level
+    advisory lock on a connection of its own: the pull itself commits per race."""
+    with db.get_bind().connect() as conn:
+        if not conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": PULL_LOCK}):
+            raise PullRunning("A pull from Strava is already running. Wait for it to finish.")
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": PULL_LOCK})
+
+
 def pull(db: Session, *, everything: bool = False) -> PullResult:
     """POST /api/strava/pull: find race-tagged activities not pulled before and file them
     as races, then bring every pulled activity's tagline up to date."""
+    with _one_pull_at_a_time(db):
+        return _pull(db, everything=everything)
+
+
+def _pull(db: Session, *, everything: bool) -> PullResult:
     row = account(db)
     if row is None:
         raise NotConnected("Strava isn't connected.")
@@ -409,10 +528,16 @@ def pull(db: Session, *, everything: bool = False) -> PullResult:
         result.complete = False
         result.message = (
             "Stopped early: Strava's rate limit is nearly used up. Pull again in 15 minutes "
-            "to continue where this one stopped."
+            f"{_continue(everything)}"
         )
     except StravaAuthError:
+        _after_refusal(db, token)
         raise
+    except StravaError as exc:
+        # Races already filed are committed: say what they were, and stop here.
+        db.rollback()
+        result.complete = False
+        result.message = f"Stopped early: {exc} Pull again later {_continue(everything)}"
     if result.complete and not result.retry_later:
         row.last_pull_at = started
     if result.complete:
@@ -425,6 +550,11 @@ def pull(db: Session, *, everything: bool = False) -> PullResult:
             )
     db.commit()
     return result
+
+
+def _continue(everything: bool) -> str:
+    where = 'with "Search all of Strava" ticked ' if everything else ""
+    return f"{where}to continue where this one stopped."
 
 
 def _pull_chain(
@@ -458,15 +588,20 @@ def _pull_chain(
             )
         result.retry_later = True  # not remembered: the next pull tries again
         return
-    checked = [_fetch(token, a) for a in new]
+    checked = [_fetch(token, a, result) for a in new]
     race, outcomes = imports.place(
         db, list(checked), race=target, race_type=None if target else race_type_of(chain)
     )
     created = target is None and race is not None
     if created:
         race.name = race_name(chain)  # type: ignore[union-attr]
-    for a, outcome in zip(new, outcomes, strict=True):
-        known[int(a["id"])] = _remember(db, a, race.id if race else None, outcome)
+    for a, check, outcome in zip(new, checked, outcomes, strict=True):
+        if outcome.result == "failed" and not isinstance(check, Outcome):
+            # The race refused it (a leg its type doesn't have, a recording hours away).
+            # Not remembered: once the owner changes the race, the next pull adds it.
+            result.retry_later = True
+        else:
+            known[int(a["id"])] = _remember(db, a, race.id if race else None, outcome)
         if outcome.result != "attached":
             result.skipped.append(
                 {"activity_id": str(a["id"]), "name": a.get("name"), "message": outcome.message}
@@ -485,15 +620,23 @@ def clock(seconds: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def tagline(db: Session, race: Race) -> str:
+def season_numbers(db: Session) -> dict[int, int]:
+    """Each race's place among its year's races, by date: {race id: n}."""
+    numbers: dict[int, int] = {}
+    count: dict[int, int] = {}
+    for race_id, day in db.execute(select(Race.id, Race.date).order_by(Race.date, Race.id)):
+        count[day.year] = count.get(day.year, 0) + 1
+        numbers[race_id] = count[day.year]
+    return numbers
+
+
+def tagline(db: Session, race: Race, numbers: dict[int, int] | None = None) -> str:
     """One line: which race of the season it was, its distance and time, and a link when
-    visitors can open it. "🏁 Race #7 of 2026 · Olympic distance · 2:31:04 · <link>"."""
-    year = select(Race.id).where(
-        Race.date >= race.date.replace(month=1, day=1),
-        Race.date <= race.date.replace(month=12, day=31),
-    )
-    ordered = list(db.scalars(year.order_by(Race.date, Race.id)))
-    parts = [f"{TAGLINE_PREFIX}{ordered.index(race.id) + 1} of {race.date.year}"]
+    visitors can open it. "🏁 Race #7 of 2026 · Olympic distance · 2:31:04 · <link>".
+    `numbers`: `season_numbers`, when the caller writes several lines."""
+    if numbers is None:
+        numbers = season_numbers(db)
+    parts = [f"{TAGLINE_PREFIX}{numbers[race.id]} of {race.date.year}"]
     if race.category is not None:
         parts.append(race.category.label)
     result = race.official_result
@@ -523,16 +666,29 @@ def _taglines(db: Session, row: StravaAccount, token: str, result: PullResult) -
             StravaActivity.state == "imported", StravaActivity.race_id.is_not(None)
         )
     ).all()
+    numbers = season_numbers(db)
+    lines: dict[int, str] = {}
+    held = {
+        (int(external_id), race_id)
+        for external_id, race_id in db.execute(
+            select(Upload.external_id, Upload.race_id).where(Upload.source == UploadSource.STRAVA)
+        )
+    }
     for entry in pulled:
         race = db.get(Race, entry.race_id)
-        if race is None:
-            continue
-        line = tagline(db, race)
+        if race is None or (entry.activity_id, race.id) not in held:
+            continue  # its Strava file was taken off that race: its line isn't ours to keep
+        if race.id not in lines:
+            lines[race.id] = tagline(db, race, numbers)
+        line = lines[race.id]
         if line == entry.tagline:
             continue
         try:
-            _spend()
-            current = strava_api.activity(token, entry.activity_id).get("description")
+            if entry.activity_id in result.descriptions:
+                current = result.descriptions[entry.activity_id]
+            else:
+                _spend()
+                current = strava_api.activity(token, entry.activity_id).get("description")
             merged = merge_description(current, line)
             if merged != (current or ""):
                 _spend()
@@ -559,23 +715,33 @@ def handle_event(db: Session, event: dict[str, Any]) -> None:
         return
     kind, aspect = event.get("object_type"), event.get("aspect_type")
     if kind == "athlete" and (event.get("updates") or {}).get("authorized") == "false":
+        token = access_token(db, row)
         try:
-            strava_api.get(access_token(db, row), "/athlete")
+            strava_api.get(token, "/athlete")
         except StravaAuthError:
-            revoked(db)
+            _after_refusal(db, token)  # the same check as a pull: renew first, then believe it
         return
     if kind == "activity" and aspect == "delete":
-        activity_id = int(event["object_id"])
         try:
-            strava_api.activity(access_token(db, row), activity_id)
+            activity_id = int(event["object_id"])
+        except (KeyError, TypeError, ValueError):
+            return
+        held = db.scalar(
+            select(Upload.id).where(
+                Upload.source == UploadSource.STRAVA, Upload.external_id == str(activity_id)
+            )
+        )
+        if held is None and db.get(StravaActivity, activity_id) is None:
+            return  # nothing of it here: not worth one of Strava's requests
+        token = access_token(db, row)
+        try:
+            strava_api.activity(token, activity_id)
             return  # still there: not deleted
         except StravaAuthError:
-            revoked(db)
+            _after_refusal(db, token)
             return
-        except StravaError as exc:
-            if "404" not in str(exc):
-                return
-        forget_activity(db, activity_id)
+        except strava_api.StravaNotFound:
+            forget_activity(db, activity_id)
 
 
 def forget_activity(db: Session, activity_id: int) -> None:
@@ -584,10 +750,13 @@ def forget_activity(db: Session, activity_id: int) -> None:
     path = None
     if upload is not None:
         try:
-            path = imports.remove_upload(db, upload)
+            with db.begin_nested():
+                path = imports.remove_upload(db, upload)
         except GroupingError:
-            db.rollback()
-            return
+            # Deleted on Strava means deleted here, even if the legs left behind don't
+            # make derived transitions.
+            path = upload.stored_path
+            _drop_without_transitions(db, upload)
     entry = db.get(StravaActivity, activity_id)
     if entry is not None:
         db.delete(entry)

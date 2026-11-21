@@ -29,6 +29,11 @@ class StravaPatch(Patch):
     public_consent: bool | None = None  # true: agree; false: withdraw (unpublishes)
 
 
+class DisconnectOut(BaseModel):
+    revoked: bool  # Strava confirmed it; the Strava data is deleted either way
+    message: str
+
+
 class PullIn(BaseModel):
     everything: bool = False  # search all of Strava, not just since the last pull
 

@@ -5,6 +5,7 @@ import { api, ApiError } from "./api.js";
 import { header, tableFallback, fail } from "./layout.js";
 import { DASH, SEGMENTS, SEGMENT_LABELS, duration, delta, distance, elevation, esc, date } from "./format.js";
 import { gapChart } from "./charts.js";
+import { viewOnStrava } from "./strava.js";
 
 const main = /** @type {HTMLElement} */ (document.getElementById("main"));
 const params = new URLSearchParams(location.search);
@@ -105,12 +106,14 @@ function renderComparison(cmp) {
         <h1>${esc(a.name)}</h1>
         <p class="muted">${esc(date(a.date))}</p>
         <p class="cmp-total tnum">${esc(duration(a.total_time))}</p>
+        ${stravaLegs(cmp.strava_urls.a)}
       </div>
       <div class="cmp-race">
         <h1>${esc(b.name)}</h1>
         <p class="muted">${esc(date(b.date))}</p>
         <p class="cmp-total tnum">${esc(duration(b.total_time))}
           <span class="cmp-gap">${esc(delta(totalGap))}</span></p>
+        ${stravaLegs(cmp.strava_urls.b)}
       </div>
     </div>
 
@@ -136,6 +139,18 @@ function renderComparison(cmp) {
 
   renderConditions(cmp);
   renderFueling(cmp);
+}
+
+/**
+ * "View on Strava" beside each leg whose splits and pacing come from Strava (brand
+ * guidelines). Empty when no leg does.
+ * @param {Partial<Record<import("./types.js").Segment, string>>} urls
+ */
+function stravaLegs(urls) {
+  const legs = SEGMENTS.filter((s) => urls[s]);
+  if (!legs.length) return "";
+  return `<p class="small">${legs.map((s) =>
+    `${esc(SEGMENT_LABELS[s])} ${viewOnStrava(urls[s])}`).join(" · ")}</p>`;
 }
 
 /** @param {import("./types.js").Comparison} cmp */

@@ -94,9 +94,12 @@ def check_same_race(race: Race, parsed: ParsedFile) -> None:
 
 
 def reconcile_primary(db: Session, race: Race, segment: Segment) -> None:
-    """Keep exactly one primary per segment; default to the richest recording (power
-    beats none, a measurement beats a derived transition, then the longer duration).
-    An existing real primary is kept, so attaching a second device never steals it."""
+    """Keep exactly one primary per segment; default to the richest recording (a FIT
+    recording beats one from Strava, power beats none, a measurement beats a derived
+    transition, then the longer duration). An existing real primary is kept, so attaching
+    a second device never steals it, and the owner's own pick survives a re-import. A FIT
+    file *newly added* over a Strava primary takes over in `add_recordings`
+    (docs/features/strava.md: the FIT recording is primary, whichever came first)."""
     candidates = [a for a in race.activities if a.segment == segment]
     if not candidates:
         return
@@ -104,7 +107,13 @@ def reconcile_primary(db: Session, race: Race, segment: Segment) -> None:
     if len(current) == 1 and not current[0].is_derived:
         return
     winner = max(
-        candidates, key=lambda a: (a.avg_power is not None, not a.is_derived, a.elapsed_time)
+        candidates,
+        key=lambda a: (
+            a.source is not UploadSource.STRAVA,
+            a.avg_power is not None,
+            not a.is_derived,
+            a.elapsed_time,
+        ),
     )
     set_primary(db, winner)
 
@@ -365,8 +374,10 @@ def _describe(race: Race, upload: Upload, parsed: ParsedFile, segment: Segment |
         legs = ", ".join(_SEGMENT_LABELS[s.segment] for s in parsed.sessions if s.segment)
         return f"Added: {legs}."
     others = [a for a in race.activities if a.segment == segment and a.upload_id != upload.id]
-    if others:
+    if others and any(a.is_primary for a in others):
         return f"Added as a second {segment} recording. The first one stays primary."
+    if others:
+        return f"Added as the primary {segment} recording. The one from Strava stays as a second."
     return f"Added as the {segment} leg."
 
 
@@ -494,6 +505,7 @@ def add_recordings(
         )
     }
     touched = set()
+    added: list[RecordedActivity] = []
     for session in parsed.sessions:
         seg = session.segment or segment
         if seg is None:
@@ -502,6 +514,7 @@ def add_recordings(
         if activity is None:
             activity = RecordedActivity(upload_id=upload.id)
             race.activities.append(activity)
+            added.append(activity)
         _fill(activity, Segment(seg), session, parsed)
         activity.source = upload.source
         db.flush()
@@ -509,6 +522,12 @@ def add_recordings(
         touched.add(Segment(seg))
     for seg in touched:
         reconcile_primary(db, race, seg)
+    if upload.source is not UploadSource.STRAVA:
+        primaries = race.primary_activities()
+        for activity in added:
+            current = primaries.get(activity.segment)
+            if current is not None and current.source is UploadSource.STRAVA:
+                set_primary(db, activity)  # a new FIT file beats a Strava primary
 
 
 def _fill(activity: RecordedActivity, segment: Segment, s: ParsedSession, f: ParsedFile) -> None:

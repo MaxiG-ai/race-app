@@ -79,16 +79,20 @@ export function pullPanel(container, { compact = false, onDone } = {}) {
     status.textContent = "Pulling from Strava…";
     status.classList.remove("error");
     result.innerHTML = "";
+    status.classList.remove("strava-incomplete");
     try {
       /** @type {PullOut} */
       const out = await api("/strava/pull", { method: "POST", body: { everything: everything.checked } });
-      status.textContent = "";
+      // The live region says how it ended; the list below has the details.
+      status.textContent = out.message;
+      status.classList.toggle("strava-incomplete", !out.complete);
       result.innerHTML = pullSummary(out);
       onDone?.(out);
     } catch (err) {
       status.textContent = err instanceof ApiError ? err.message : "The pull didn't finish.";
       status.classList.add("error");
-      if (err instanceof ApiError && err.status === 409) {
+      // 409 is also "a pull is already running", which no reconnect fixes.
+      if (err instanceof ApiError && err.status === 409 && !err.message.includes("already running")) {
         result.innerHTML = `<p>${connectButton("Connect with Strava", location.pathname)}</p>`;
       }
     } finally {
@@ -111,7 +115,6 @@ function pullSummary(out) {
       ${esc(s.name ?? `Activity ${s.activity_id}`)}: <span class="muted">${esc(s.message)}</span></li>`).join("");
   const errors = out.tagline_errors.map((e) => `<li class="result-line failed">${esc(e)}</li>`).join("");
   return `
-    <p class="${out.complete ? "" : "strava-incomplete"}">${esc(out.message)}</p>
     ${races ? `<ul class="result-list">${races}</ul>` : ""}
     ${skipped ? `<details class="strava-skipped"><summary>${out.skipped.length}
       ${out.skipped.length === 1 ? "activity" : "activities"} skipped</summary>

@@ -5,21 +5,26 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import event, select, text
 
 from app.access import hash_password
 from app.config import get_settings
+from app.db import _session_factory
 from app.main import app
 from app.models import Owner, Race, RecordedActivity, SiteSettings, StravaAccount, Upload
 from app.models.enums import Sport, UploadSource
 from app.services import imports, strava, strava_api, strava_map
-from app.services.strava_api import Response
-from tests.conftest import upload
+from app.services.fit_import import parse_fit
+from app.services.imports import GroupingError
+from app.services.strava_api import Response, StravaError
+from tests.conftest import fixture_bytes, upload
 
 ATHLETE = 4242
 STRANGER = 777
@@ -116,6 +121,14 @@ class FakeStrava:
         self.refresh_ok = True
         self.rate_usage = (1, 1)
         self.deleted: set[int] = set()
+        # path -> an HTTP status Strava answers instead, or "network" for no answer at all
+        self.errors: dict[str, int | str] = {}
+        # Strava rotates the refresh token: with `rotate`, an old one is refused (400).
+        self.rotate = False
+        self.current_refresh = "refresh-1"
+        self.refreshes = 0
+        self.token_delay = 0.0
+        self._lock = threading.Lock()
 
     def add(self, *items: dict) -> None:
         for a in items:
@@ -134,21 +147,18 @@ class FakeStrava:
         path = parsed.path
         self.calls.append((method, path))
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        error = self.errors.get(path)
+        if error == "network":
+            raise StravaError("Strava couldn't be reached: timed out")
+        if error is not None:
+            return Response(int(error), {"message": "Server Error"}, self._headers())
         if path == "/oauth/token":
             if data["grant_type"] == "authorization_code":
                 return Response(200, self._token(data["code"]), {})
-            if not self.refresh_ok:
-                return Response(400, {"message": "Bad Request"}, {})
-            return Response(
-                200,
-                {
-                    "access_token": "access-2",
-                    "refresh_token": "refresh-2",
-                    "expires_at": int((datetime.now(UTC) + timedelta(hours=6)).timestamp()),
-                },
-                {},
-            )
+            return self._refresh(data["refresh_token"])
         if path in ("/oauth/revoke", "/oauth/deauthorize"):
+            if path == "/oauth/deauthorize" and token not in self.valid_tokens:
+                return Response(401, {"message": "Authorization Error"}, {})
             self.revoked.append(path)
             return Response(200, None, {})
         if token not in self.valid_tokens:
@@ -195,6 +205,25 @@ class FakeStrava:
                 return Response(200, a, headers)
             return Response(200, a, headers)
         return Response(404, {"message": "Record Not Found"}, headers)
+
+    def _refresh(self, sent: str) -> Response:
+        with self._lock:
+            if not self.refresh_ok or (self.rotate and sent != self.current_refresh):
+                return Response(400, {"message": "Bad Request"}, {})
+            self.refreshes += 1
+            new = f"refresh-{self.refreshes + 1}"
+            if self.rotate:
+                self.current_refresh = new  # the old one stops working at once
+        time.sleep(self.token_delay)
+        return Response(
+            200,
+            {
+                "access_token": "access-2",
+                "refresh_token": new,
+                "expires_at": int((datetime.now(UTC) + timedelta(hours=6)).timestamp()),
+            },
+            {},
+        )
 
     def _token(self, code: str) -> dict:
         athlete = STRANGER if code == "stranger" else self.token_athlete
@@ -401,6 +430,9 @@ def test_a_forged_state_is_refused(fake):
 
 def test_the_callback_only_redirects_to_this_site(fake, owner):
     assert _authorize(owner, next_path="//evil.example") == "/?strava=connected"
+    # Browsers read "\\" as "/" and drop tabs: both would make "//evil.example".
+    assert _authorize(owner, next_path="/\\evil.example") == "/?strava=connected"
+    assert _authorize(owner, next_path="/\t/evil.example") == "/?strava=connected"
 
 
 def test_strava_routes_are_off_without_credentials(anon):
@@ -566,7 +598,8 @@ def test_disconnect_revokes_and_deletes_only_strava_data(connected, fake, db):
     upload(connected, "edge_single_bike.fit")
     fake.add(*triathlon())
     connected.post("/api/strava/pull", json={})
-    assert connected.post("/api/strava/disconnect").status_code == 204
+    response = connected.post("/api/strava/disconnect")
+    assert response.status_code == 200 and response.json()["revoked"] is True
     assert fake.revoked == ["/oauth/revoke"]
     db.expire_all()
     sources = {a.source for a in db.scalars(select(RecordedActivity))}
@@ -616,7 +649,8 @@ def test_a_forged_deauthorization_event_deletes_nothing(connected, fake, anon, d
     assert anon.post("/api/strava/webhook", json=event).status_code == 200
     db.expire_all()
     assert db.scalar(select(StravaAccount)) is not None
-    fake.valid_tokens.clear()  # now Strava really refuses the token
+    fake.valid_tokens.clear()  # now Strava really refuses the token, and its renewal
+    fake.refresh_ok = False
     anon.post("/api/strava/webhook", json=event)
     db.expire_all()
     assert db.scalar(select(StravaAccount)) is None
@@ -666,3 +700,332 @@ def test_strava_data_waits_for_consent_on_a_public_race(connected, fake, db):
     connected.patch("/api/strava", json={"public_consent": True})
     body = connected.post("/api/strava/pull", json={}).json()
     assert body["races"][0]["race_id"] == race.id
+
+
+# --- failures that must not read as revocation ------------------------------------------------
+
+
+def _expire(db, at: datetime | None = None) -> None:
+    row = db.scalar(select(StravaAccount))
+    row.expires_at = at or datetime.now(UTC)
+    db.commit()
+
+
+def _strava_uploads(db) -> list[Upload]:
+    db.expire_all()
+    return db.scalars(select(Upload).where(Upload.source == UploadSource.STRAVA)).all()
+
+
+@pytest.mark.parametrize(("failure", "status"), [(502, 502), (429, 429), ("network", 502)])
+def test_a_refresh_strava_does_not_answer_deletes_nothing(connected, fake, db, failure, status):
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    _expire(db)
+    fake.errors["/oauth/token"] = failure
+    assert connected.post("/api/strava/pull", json={}).status_code == status
+    assert len(_strava_uploads(db)) == 3
+    assert db.scalar(select(StravaAccount)) is not None
+
+
+def test_two_refreshes_at_once_keep_the_connection(connected, fake, db):
+    """A pull and a (possibly forged) webhook check refresh together; Strava rotates the
+    refresh token, so the second refresh with the old one would be refused."""
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    _expire(db, datetime.now(UTC) + timedelta(minutes=1))
+    fake.rotate, fake.token_delay = True, 0.5
+    errors: list[Exception] = []
+
+    def refresh() -> None:
+        with _session_factory()() as session:
+            try:
+                strava.access_token(session, strava.account(session))
+            except Exception as exc:  # noqa: BLE001 - collected for the assertion
+                errors.append(exc)
+
+    threads = [threading.Thread(target=refresh) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert fake.refreshes == 1
+    assert len(_strava_uploads(db)) == 3
+    assert db.scalar(select(StravaAccount)).refresh_token == fake.current_refresh
+
+
+def test_a_401_on_data_renews_and_deletes_once_strava_refuses(connected, fake, db):
+    """Revoked on strava.com while the access token still had hours left."""
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    fake.valid_tokens.clear()
+    fake.refresh_ok = False
+    assert connected.post("/api/strava/pull", json={}).status_code == 409
+    assert _strava_uploads(db) == []
+    assert db.scalar(select(StravaAccount)) is None
+
+
+def test_the_owner_api_is_off_without_credentials(connected, fake, db, monkeypatch):
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    _expire(db)
+    monkeypatch.setattr(get_settings(), "strava_client_secret", "")
+    assert connected.get("/api/strava").json()["enabled"] is False
+    assert connected.post("/api/strava/pull", json={}).status_code == 404
+    assert connected.patch("/api/strava", json={"tagline": False}).status_code == 404
+    assert connected.post("/api/strava/disconnect").status_code == 404
+    assert len(_strava_uploads(db)) == 3
+
+
+# --- the rate limit -------------------------------------------------------------------------
+
+
+def test_the_next_pull_continues_once_the_window_resets(connected, fake):
+    fake.add(*triathlon())
+    fake.rate_usage = (95, 400)
+    assert connected.post("/api/strava/pull", json={}).json()["complete"] is False
+    fake.rate_usage = (1, 400)
+    strava_api.last_rate_limit.seen_at -= timedelta(minutes=15)  # the quarter hour passed
+    body = connected.post("/api/strava/pull", json={}).json()
+    assert body["complete"] and len(body["races"]) == 1
+    daily = strava_api.RateLimit(
+        limit=(200, 2000), usage=(1, 1995), seen_at=datetime(2026, 6, 21, 23, 58, tzinfo=UTC)
+    )
+    assert daily.nearly_spent(10, now=datetime(2026, 6, 21, 23, 59, tzinfo=UTC))
+    assert not daily.nearly_spent(10, now=datetime(2026, 6, 22, 0, 1, tzinfo=UTC))
+
+
+def test_an_unfinished_search_of_everything_says_to_keep_it_ticked(connected, fake):
+    fake.add(*triathlon())
+    fake.rate_usage = (95, 400)
+    body = connected.post("/api/strava/pull", json={"everything": True}).json()
+    assert body["complete"] is False and "Search all of Strava" in body["message"]
+
+
+def test_the_tagline_reuses_the_description_the_pull_just_read(connected, fake):
+    fake.add(*triathlon())
+    assert connected.post("/api/strava/pull", json={}).json()["taglines"] == 3
+    assert fake.calls.count(("GET", "/api/v3/activities/103")) == 1
+
+
+def test_taglines_count_the_season_once_per_pull(connected, fake, db):
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    engine = db.get_bind()
+    seasons: list[str] = []
+
+    def count(conn, cursor, statement, *args) -> None:
+        if "FROM race" in statement and "ORDER BY race.date" in statement:
+            seasons.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        connected.post("/api/strava/pull", json={})
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    assert len(seasons) == 1
+
+
+# --- pulling, continued -----------------------------------------------------------------------
+
+
+def test_a_second_pull_at_once_is_refused(connected, fake, db):
+    fake.add(*triathlon())
+    with db.get_bind().connect() as other:  # a pull in progress elsewhere
+        other.execute(text("SELECT pg_advisory_lock(:k)"), {"k": strava.PULL_LOCK})
+        try:
+            response = connected.post("/api/strava/pull", json={})
+        finally:
+            other.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": strava.PULL_LOCK})
+    assert response.status_code == 409 and "already running" in response.json()["detail"]
+    assert len(connected.post("/api/strava/pull", json={}).json()["races"]) == 1
+
+
+def test_an_error_mid_pull_keeps_the_races_already_filed(connected, fake):
+    fake.add(*triathlon(), *triathlon(200, RACE_DAY + timedelta(days=7)))
+    fake.errors["/api/v3/activities/201/streams"] = 500
+    response = connected.post("/api/strava/pull", json={})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["complete"] is False and "500" in body["message"]
+    assert len(body["races"]) == 1
+
+
+def test_an_activity_its_race_refused_is_tried_again(connected, fake, db):
+    ride = activity(1, "Lake Ride", "Ride", RACE_DAY, 3600, 30000.0)  # not tagged yet
+    run = activity(
+        2, "Lake Run", "Run", RACE_DAY + timedelta(seconds=3720), 2400, 10000.0, workout_type=1
+    )
+    fake.add(ride, run)
+    race_id = connected.post("/api/strava/pull", json={}).json()["races"][0]["race_id"]
+    ride["workout_type"] = 11
+    body = connected.post("/api/strava/pull", json={"everything": True}).json()
+    assert "Change the race type" in body["skipped"][0]["message"]
+    patched = connected.patch(f"/api/races/{race_id}", json={"race_type": "triathlon"})
+    assert patched.status_code == 200
+    body = connected.post("/api/strava/pull", json={"everything": True}).json()
+    assert [r["race_id"] for r in body["races"]] == [race_id]
+    db.expire_all()
+    assert {"bike", "run"} <= set(db.get(Race, race_id).primary_activities())
+
+
+def test_reconnecting_refills_the_races_a_disconnect_emptied(connected, fake, db):
+    fake.add(*triathlon())
+    race_id = connected.post("/api/strava/pull", json={}).json()["races"][0]["race_id"]
+    connected.patch(f"/api/races/{race_id}", json={"name": "My named race"})
+    connected.post("/api/strava/disconnect")
+    assert _authorize(connected, next_path="/admin/site") == "/admin/site?strava=connected"
+    body = connected.post("/api/strava/pull", json={}).json()
+    assert [(r["race_id"], r["created"]) for r in body["races"]] == [(race_id, False)]
+    db.expire_all()
+    races = db.scalars(select(Race)).all()
+    assert [r.name for r in races] == ["My named race"]
+    assert len(races[0].activities) == 5
+
+
+def _fit_bike():
+    return parse_fit(fixture_bytes("edge_single_bike.fit")).sessions[0]
+
+
+def test_a_fit_file_dropped_after_the_strava_pull_becomes_primary(connected, fake, db):
+    bike = _fit_bike()
+    fake.add(activity(300, "Bike race", "Ride", bike.start_time, bike.elapsed_time, 4e4, 11))
+    race_id = connected.post("/api/strava/pull", json={}).json()["races"][0]["race_id"]
+    outcome = upload(connected, "edge_single_bike.fit", race_id=race_id)[0]
+    assert outcome["result"] == "attached"
+    assert "stays primary" not in outcome["message"]
+    db.expire_all()
+    bikes = [a for a in db.get(Race, race_id).activities if a.segment == "bike"]
+    assert [a.source for a in bikes if a.is_primary] == [UploadSource.FIT_UPLOAD]
+
+
+def test_purging_without_transitions_keeps_a_primary_and_drops_stale_ones(
+    connected, fake, db, monkeypatch
+):
+    """The fallback when the legs left behind can't make transitions."""
+    bike = _fit_bike()
+    swim_start = bike.start_time - timedelta(seconds=1500 + 180)
+    bike_end = bike.start_time + timedelta(seconds=bike.elapsed_time)
+    fake.add(
+        activity(401, "Lake Swim", "Swim", swim_start, 1500, 1500.0),
+        activity(402, "Lake Bike", "Ride", bike.start_time, bike.elapsed_time, 4e4, 11),
+        activity(403, "Lake Run", "Run", bike_end + timedelta(seconds=300), 2400, 1e4, 1),
+    )
+    race_id = connected.post("/api/strava/pull", json={}).json()["races"][0]["race_id"]
+    upload(connected, "edge_single_bike.fit", race_id=race_id)
+    db.expire_all()
+    race = db.get(Race, race_id)
+    strava_bike = next(
+        a for a in race.activities if a.segment == "bike" and a.source is UploadSource.STRAVA
+    )
+    imports.set_primary(db, strava_bike)  # as a race filed before FIT took precedence
+    db.commit()
+
+    def overlap(db, race):
+        raise GroupingError("The bike and run legs overlap; they can't be one race.")
+
+    monkeypatch.setattr(imports, "synthesize_transitions", overlap)
+    connected.post("/api/strava/disconnect")
+    db.expire_all()
+    race = db.get(Race, race_id)
+    assert [(a.segment, a.source, a.is_primary) for a in race.activities] == [
+        ("bike", UploadSource.FIT_UPLOAD, True)
+    ]
+    assert race.official_result is None or race.official_result.swim_time is None
+
+
+def test_disconnect_renews_the_token_for_the_legacy_fallback(connected, fake, db):
+    _expire(db, datetime.now(UTC) - timedelta(hours=1))
+    fake.valid_tokens = {"access-2"}  # the stored access token has expired
+    fake.errors["/oauth/revoke"] = 500
+    body = connected.post("/api/strava/disconnect").json()
+    assert body["revoked"] is True and fake.revoked == ["/oauth/deauthorize"]
+
+
+def test_disconnect_says_when_strava_did_not_confirm_it(connected, fake, db):
+    fake.errors["/oauth/revoke"] = 500
+    fake.errors["/oauth/deauthorize"] = 500
+    body = connected.post("/api/strava/disconnect").json()
+    assert body["revoked"] is False and "Strava settings" in body["message"]
+    assert db.scalar(select(StravaAccount)) is None
+
+
+def test_the_comparison_links_its_strava_legs(connected, fake):
+    fake.add(*triathlon(), *triathlon(200, RACE_DAY + timedelta(days=7)))
+    a, b = (r["race_id"] for r in connected.post("/api/strava/pull", json={}).json()["races"])
+    urls = connected.get(f"/api/races/{a}/compare/{b}").json()["strava_urls"]
+    assert urls["a"]["run"] == "https://www.strava.com/activities/103"
+    assert urls["b"]["bike"] == "https://www.strava.com/activities/202"
+    assert "t1" not in urls["a"]
+
+
+def test_a_forged_delete_event_for_an_unknown_activity_costs_nothing(
+    connected, fake, anon, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "strava_webhook_verify_token", "s3cret")
+    calls = len(fake.calls)
+    event_ = {"object_type": "activity", "object_id": 999, "aspect_type": "delete"}
+    for _ in range(5):
+        anon.post("/api/strava/webhook", json={**event_, "owner_id": ATHLETE})
+    assert len(fake.calls) == calls
+
+
+def test_a_wrong_client_secret_is_not_a_revocation(connected, fake, db, monkeypatch):
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    row = db.scalar(select(StravaAccount))
+    row.expires_at = datetime.now(UTC)
+    db.commit()
+    real = fake.__call__
+
+    def bad_client(method, url, **kw):
+        if url.endswith("/oauth/token"):
+            body = {
+                "message": "Bad Request",
+                "errors": [{"resource": "Application", "field": "client_id", "code": "invalid"}],
+            }
+            return Response(400, body, {})
+        return real(method, url, **kw)
+
+    monkeypatch.setattr(strava_api, "http", bad_client)
+    response = connected.post("/api/strava/pull", json={})
+    assert response.status_code != 200 or response.json()["complete"] is False
+    db.expire_all()
+    assert db.scalar(select(StravaAccount)) is not None
+    assert db.scalars(select(Upload)).all()
+
+
+def test_a_broken_webhook_event_is_ignored(connected, fake, anon, monkeypatch):
+    monkeypatch.setattr(get_settings(), "strava_webhook_verify_token", "s3cret")
+    event = {"object_type": "activity", "aspect_type": "delete", "owner_id": ATHLETE}
+    assert anon.post("/api/strava/webhook", json=event).status_code == 200
+    event["object_id"] = "not a number"
+    assert anon.post("/api/strava/webhook", json=event).status_code == 200
+
+
+def test_a_removed_strava_file_keeps_no_tagline(connected, fake, db):
+    fake.add(*triathlon())
+    connected.post("/api/strava/pull", json={})
+    run = db.scalar(select(Upload).where(Upload.external_id == "103"))
+    assert connected.delete(f"/api/uploads/{run.id}").status_code == 204
+    puts = len(fake.puts)
+    connected.put(
+        f"/api/races/{run.race_id}/official-result", json={"total_time": 8600, "is_confirmed": True}
+    )
+    connected.post("/api/strava/pull", json={})
+    assert 103 not in [activity_id for activity_id, _ in fake.puts[puts:]]
+
+
+def test_the_owners_pick_of_a_strava_recording_survives_a_reimport(connected, fake, db):
+    upload(connected, "edge_single_bike.fit")
+    race = db.scalars(select(Race)).one()
+    bike = race.primary_activities()["bike"]
+    fake.add(activity(300, "Bike race", "Ride", bike.start_time, bike.elapsed_time, 4e4, 11))
+    connected.post("/api/strava/pull", json={})
+    db.expire_all()
+    pulled = next(a for a in db.get(Race, race.id).activities if a.source is UploadSource.STRAVA)
+    assert connected.patch(f"/api/activities/{pulled.id}", json={"is_primary": True}).is_success
+    for u in db.scalars(select(Upload).where(Upload.source == UploadSource.FIT_UPLOAD)):
+        imports.reimport(db, u)
+    db.expire_all()
+    assert db.get(RecordedActivity, pulled.id).is_primary

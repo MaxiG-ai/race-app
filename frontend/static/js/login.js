@@ -6,11 +6,18 @@
 import { api, ApiError } from "./api.js";
 import { connectButton, takeStravaParam } from "./strava.js";
 
-/** A same-site path only: starts with "/" but not "//" (protocol-relative). */
+/**
+ * A same-site path only. Resolved the way the browser will resolve it, so "/\\evil.example"
+ * or "/<tab>/evil.example" (both "//evil.example" to a URL parser) can't leave the site.
+ */
 function safeNext(/** @type {string|null} */ next) {
-  if (!next) return "/";
-  if (!next.startsWith("/") || next.startsWith("//")) return "/";
-  return next;
+  if (!next || !next.startsWith("/")) return "/";
+  try {
+    const url = new URL(next, location.origin);
+    return url.origin === location.origin ? url.pathname + url.search + url.hash : "/";
+  } catch {
+    return "/";
+  }
 }
 
 const form = /** @type {HTMLFormElement} */ (document.getElementById("login-form"));

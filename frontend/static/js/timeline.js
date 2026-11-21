@@ -106,7 +106,7 @@ async function stravaPull(reload) {
   } catch {
     return;
   }
-  if (!status.connected || !status.can_pull) return;
+  if (!status.enabled || !status.connected || !status.can_pull) return;
   pullPanel(el, {
     compact: true,
     onDone: (out) => {

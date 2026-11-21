@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ class StravaAuthError(StravaError):
     """401: the token is invalid or the athlete revoked access. Reconnect."""
 
 
+class StravaNotFound(StravaError):
+    """404: the activity doesn't exist (any more), or isn't visible with our scopes."""
+
+
 class StravaRateLimited(StravaError):
     """429: stop for now. Strava's windows reset every 15 minutes and at midnight UTC."""
 
@@ -66,13 +71,29 @@ class RateLimit:
     usage: tuple[int, int] | None = None
     read_limit: tuple[int, int] | None = None
     read_usage: tuple[int, int] | None = None
+    seen_at: datetime | None = None  # when a response last reported these
 
-    def nearly_spent(self, margin: int = 5) -> bool:
-        """True when the next few calls could hit a limit: stop before Strava says 429."""
+    def current(self, now: datetime | None = None) -> tuple[bool, bool]:
+        """Whether the (15-minute, daily) numbers still describe Strava's windows: the
+        first resets on the quarter hour, the second at 00:00 UTC."""
+        if self.seen_at is None:
+            return True, True
+        now = now or datetime.now(UTC)
+        seen = self.seen_at.astimezone(UTC)
+        quarter = seen.replace(minute=seen.minute - seen.minute % 15, second=0, microsecond=0)
+        return now < quarter + timedelta(minutes=15), now.date() == seen.date()
+
+    def nearly_spent(self, margin: int = 5, now: datetime | None = None) -> bool:
+        """True when the next few calls could hit a limit: stop before Strava says 429.
+        A window that has reset since the last response no longer counts."""
+        current = self.current(now)
         for limit, usage in ((self.limit, self.usage), (self.read_limit, self.read_usage)):
             if not (limit and usage):
                 continue
-            if any(u >= lim - margin for u, lim in zip(usage, limit, strict=True)):
+            if any(
+                live and u >= lim - margin
+                for u, lim, live in zip(usage, limit, current, strict=True)
+            ):
                 return True
         return False
 
@@ -129,6 +150,7 @@ def _track_rate_limit(headers: dict[str, str]) -> None:
     last_rate_limit.usage = _pair(lower.get("x-ratelimit-usage"))
     last_rate_limit.read_limit = _pair(lower.get("x-readratelimit-limit"))
     last_rate_limit.read_usage = _pair(lower.get("x-readratelimit-usage"))
+    last_rate_limit.seen_at = datetime.now(UTC)
 
 
 def _message(body: Any) -> str:
@@ -153,6 +175,8 @@ def _check(response: Response) -> Any:
             "Strava's rate limit is reached. Try again in 15 minutes (or tomorrow, for the "
             "daily limit)."
         )
+    if response.status == 404:
+        raise StravaNotFound(f"Strava answered 404: {_message(response.body)}")
     if response.status >= 400:
         raise StravaError(f"Strava answered {response.status}: {_message(response.body)}")
     return response.body
@@ -189,6 +213,19 @@ def exchange_code(client_id: str, client_secret: str, code: str) -> dict[str, An
     return body
 
 
+def _names_application(body: Any) -> bool:
+    """Strava's error body names what it refused: `Application` / `client_id` /
+    `client_secret` is the app's credentials, `RefreshToken` / `refresh_token` the athlete's
+    grant."""
+    errors = body.get("errors") if isinstance(body, dict) else None
+    for e in errors if isinstance(errors, list) else []:
+        if not isinstance(e, dict):
+            continue
+        if e.get("resource") == "Application" or e.get("field") in ("client_id", "client_secret"):
+            return True
+    return False
+
+
 def refresh_token(client_id: str, client_secret: str, refresh: str) -> dict[str, Any]:
     """A new access token. The refresh token may change too: always keep the newest."""
     data = {
@@ -197,19 +234,29 @@ def refresh_token(client_id: str, client_secret: str, refresh: str) -> dict[str,
         "grant_type": "refresh_token",
         "refresh_token": refresh,
     }
-    try:
-        body = _check(http("POST", TOKEN_URL, data=data))
-    except StravaError as exc:
-        # A refused refresh token (400/401) means the athlete revoked access.
-        raise StravaAuthError(f"Strava refused to renew the connection ({exc}).") from exc
+    response = http("POST", TOKEN_URL, data=data)
+    if response.status in (400, 401) and _names_application(response.body):
+        # Our client id or secret is wrong (a deployment mistake), not the athlete's
+        # refusal: never a reason to delete their data.
+        raise StravaError(
+            "Strava refused this site's client id or secret. Check STRAVA_CLIENT_ID and "
+            f"STRAVA_CLIENT_SECRET ({_message(response.body)})."
+        )
+    if response.status in (400, 401):
+        # A refused refresh token means the athlete revoked access. Only a refusal does:
+        # a timeout, a 429 or a 5xx is Strava being busy, and raises a plain StravaError.
+        raise StravaAuthError(
+            f"Strava refused to renew the connection ({_message(response.body)})."
+        )
+    body = _check(response)
     if not isinstance(body, dict) or "access_token" not in body:
-        raise StravaAuthError("Strava's refresh response has no access token.")
+        raise StravaError("Strava's refresh response has no access token.")
     return body
 
 
-def revoke(client_id: str, client_secret: str, refresh: str, access: str) -> None:
-    """Revoke our access, so the app disappears from the athlete's Strava settings. Best
-    effort: a token Strava already forgot is fine, and the legacy endpoint is the fallback."""
+def revoke(client_id: str, client_secret: str, refresh: str, access: str) -> bool:
+    """Revoke our access, so the app disappears from the athlete's Strava settings; the
+    legacy endpoint is the fallback. Returns whether Strava confirmed it."""
     try:
         response = http(
             "POST",
@@ -218,10 +265,11 @@ def revoke(client_id: str, client_secret: str, refresh: str, access: str) -> Non
             basic=(client_id, client_secret),
         )
         if response.status < 400:
-            return
-        http("POST", DEAUTHORIZE_URL, token=access)
+            return True
+        return http("POST", DEAUTHORIZE_URL, token=access).status < 400
     except StravaError:
         log.warning("Strava revocation failed", exc_info=True)
+        return False
 
 
 # --- data -------------------------------------------------------------------------------

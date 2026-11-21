@@ -175,6 +175,8 @@
  * @property {{segment: Segment, a: {carbs_g: number|null, g_per_h: number|null,
  *   products: {name: string, quantity: number|null}[]}|null, b: any,
  *   carbs_delta_g: number|null, only_a: string[], only_b: string[]}[]} fueling
+ * @property {{a: Partial<Record<Segment, string>>, b: Partial<Record<Segment, string>>}} strava_urls
+ *   "View on Strava" per leg recorded from Strava
  */
 
 /**

@@ -10,11 +10,21 @@ Three routers, each from an access factory like every other:
 
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 
@@ -29,9 +39,11 @@ from app.config import get_settings
 from app.db import _session_factory, utcnow
 from app.models import Owner
 from app.routers.access import site_settings
-from app.schemas.strava import PullIn, PullOut, StravaPatch, StravaStatus
+from app.schemas.strava import DisconnectOut, PullIn, PullOut, StravaPatch, StravaStatus
 from app.services import strava, strava_api
 from app.services.strava_api import StravaAuthError, StravaError
+
+log = logging.getLogger(__name__)
 
 oauth = APIRouter(include_in_schema=False)
 write = owner_router()
@@ -54,7 +66,11 @@ def _base_url(request: Request) -> str:
 
 
 def _safe_next(target: str | None) -> str:
+    """A path on this site. Browsers read a backslash as a slash and drop tabs and
+    newlines, so "/\\evil.example" would be "//evil.example": refused too."""
     if not target or not target.startswith("/") or target.startswith("//"):
+        return "/"
+    if "\\" in target or any(ord(c) < 0x20 or ord(c) == 0x7F for c in target):
         return "/"
     return target
 
@@ -198,7 +214,7 @@ def _strava_errors(exc: StravaError) -> HTTPException:
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(exc, strava_api.StravaRateLimited):
         return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
-    if isinstance(exc, strava.NotConnected):
+    if isinstance(exc, strava.NotConnected | strava.PullRunning):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
 
@@ -208,7 +224,9 @@ def get_status(db: DB):
     return _status(db)
 
 
-@write.patch("/strava", response_model=StravaStatus)
+# Without STRAVA_CLIENT_ID/SECRET everything but the status is off: a refresh sent without
+# them would be refused, and a refusal reads as revocation.
+@write.patch("/strava", response_model=StravaStatus, dependencies=[Depends(_enabled)])
 def patch_settings(body: StravaPatch, db: DB):
     values = body.model_dump(exclude_unset=True)
     site = site_settings(db)
@@ -223,7 +241,7 @@ def patch_settings(body: StravaPatch, db: DB):
     return _status(db)
 
 
-@write.post("/strava/pull", response_model=PullOut)
+@write.post("/strava/pull", response_model=PullOut, dependencies=[Depends(_enabled)])
 def pull(body: PullIn, db: DB):
     """The "Pull from Strava" button."""
     try:
@@ -234,10 +252,16 @@ def pull(body: PullIn, db: DB):
     return PullOut.from_result(result)
 
 
-@write.post("/strava/disconnect", status_code=status.HTTP_204_NO_CONTENT)
+@write.post("/strava/disconnect", response_model=DisconnectOut, dependencies=[Depends(_enabled)])
 def disconnect(db: DB):
     """Revoke the app's access at Strava and delete every recording pulled from it."""
-    strava.disconnect(db)
+    if strava.disconnect(db):
+        return DisconnectOut(revoked=True, message="Strava is disconnected.")
+    return DisconnectOut(
+        revoked=False,
+        message="The Strava data is deleted, but Strava didn't confirm the revocation. "
+        "Remove this site under My Apps in your Strava settings.",
+    )
 
 
 # --- the webhook ------------------------------------------------------------------------
@@ -260,8 +284,9 @@ def _handle_event(event: dict) -> None:
     with _session_factory()() as db:
         try:
             strava.handle_event(db, event)
-        except StravaError:
+        except Exception:  # a background task has nobody to answer: log, never crash
             db.rollback()
+            log.exception("Strava webhook event failed: %s", event.get("aspect_type"))
 
 
 @anyone.post("/strava/webhook", status_code=status.HTTP_200_OK)

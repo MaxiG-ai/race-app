@@ -185,8 +185,9 @@ function renderStrava(s) {
     status.textContent = "Disconnecting…";
     status.classList.remove("error");
     try {
-      await api("/strava/disconnect", { method: "POST" });
-      flash("Strava is disconnected.");
+      /** @type {{revoked: boolean, message: string}} */
+      const out = await api("/strava/disconnect", { method: "POST" });
+      flash(out.message, !out.revoked);
       await loadStrava();
     } catch (err) {
       status.textContent = err instanceof ApiError ? err.message : "Couldn't disconnect.";
