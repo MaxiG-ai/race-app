@@ -14,6 +14,7 @@ from app.routers import (
     imports,
     photos,
     races,
+    strava,
     timeline,
     trends,
     weather,
@@ -37,6 +38,8 @@ ROUTERS = [
     gear.write,
     photos.read,
     photos.write,
+    strava.write,
+    strava.anyone,
 ]
 
 
@@ -49,6 +52,7 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    app.include_router(strava.oauth)  # browser redirects of the OAuth flow, outside /api
     app.include_router(pages.router)
     app.include_router(feed.router)
     static = get_settings().frontend_dir / "static"

@@ -68,7 +68,8 @@ are fiddly to write by hand.
 | `Pillow` | decoding, orientation, resizing and re-encoding race photos ([photos](features/photos.md#stripping-metadata)). JPEG/PNG/WebP decoding and resampling can't reasonably be written by hand, and re-encoding from pixels is what makes the EXIF stripping trustworthy |
 | `timezonefinder` | coordinate → timezone, offline, for the local race date ([Trap 11](reference/fit-files.md#trap-11)) and the weather hour. A lookup service would make every import depend on the network |
 
-Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo,
+Standard library instead of a package wherever possible: `urllib.request` for Open-Meteo
+and the Strava API (an OAuth client library would save a dozen lines),
 `secrets` + a `session` table instead of a JWT library, `hashlib` for content hashes,
 `zoneinfo` for local race dates, `xml.etree` for the Atom feed, and a hand-written
 Markdown subset for race reports (a library would still need a sanitiser after it; see
@@ -96,9 +97,12 @@ race-app/
       feed.py           /feed.xml, the Atom feed of public races
       services/         fit_import (bytes → dataclasses), imports (uploads, grouping,
                         primaries), results, classify, gear, weather, comparison, geo,
-                        markdown (the race-report subset), photos (strip and re-encode)
+                        markdown (the race-report subset), photos (strip and re-encode),
+                        strava_api (HTTP), strava_map (activity → dataclasses), strava
+                        (login, pull, tagline, deletion)
       migrations/       Alembic
-      cli.py            create-owner, set-password, reimport
+      cli.py            create-owner, set-password, reimport, strava-unlink,
+                        strava-subscribe
     tests/
       fixtures/         synthetic FIT files + the fit-tool script that generates them
       fixtures/private/ gitignored — your own real files, tests skip when absent

@@ -57,7 +57,7 @@ whole site is a deployment decision and should be visible in the deployment conf
 |---|---|---|---|
 | `POST` | `/api/auth/login` | anyone, rate-limited | username + password → session cookie |
 | `POST` | `/api/auth/logout` | owner | delete the session row, clear the cookie |
-| `GET` | `/api/auth/me` | anyone | `{owner: bool, site_mode}`; pages use it to show edit controls |
+| `GET` | `/api/auth/me` | anyone | `{owner: bool, site_mode, login}`; pages use it to show edit controls, the login page to pick the password form or [Strava](strava.md#login) |
 | `GET` | `/api/site` | reader | `site_settings` for headers and titles |
 | `PATCH` | `/api/site` | owner | edit `site_settings` |
 | `PATCH` | `/api/races/{id}/visibility` | owner | `{is_public}` |
@@ -131,6 +131,9 @@ never goes public by accident. Publishing is always a deliberate click.
   the username or the password was wrong.
 - Owner account: `uv run python -m app.cli create-owner` and `set-password`. No
   registration and no reset emails; the CLI *is* the reset flow.
+- **Log in with Strava** replaces the password once the owner links their Strava athlete;
+  only that athlete gets a session ([strava](strava.md#login)). `cli strava-unlink` turns
+  the password back on.
 
 ## Open questions
 

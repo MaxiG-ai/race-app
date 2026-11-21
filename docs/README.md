@@ -45,7 +45,7 @@ feature rewrite can't dilute it. Feature files link to it (e.g.
 | [comparison](features/comparison.md) | later | two races side by side, gap-to-reference chart |
 | [photos](features/photos.md) | later | race photos, EXIF stripped, cover on the card and in previews |
 | [trends](features/trends.md) | later | pacing per sport over time, temperature against pace |
-| [strava](features/strava.md) | deferred | Strava as a secondary source |
+| [strava](features/strava.md) | next | log in with Strava, pull race-tagged activities, tagline back to Strava |
 
 **Reference**
 - [fit-files.md](reference/fit-files.md) — vendor behaviour and the ten import traps

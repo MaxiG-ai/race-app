@@ -27,7 +27,7 @@ Owner only. Visitors never see uploads, stored files, `raw_data` or parse errors
 upload                        one row per file, always on the race it was dropped onto
   id (PK)
   source              enum: fit_upload, strava
-  filename            nullable (null for Strava)
+  filename            nullable (the activity's name for Strava)
   stored_path         nullable — original file on the uploads volume
   content_hash        sha256, unique — the same file can't be uploaded twice
   external_id         nullable, Strava activity id, unique when set
@@ -181,7 +181,8 @@ are ignored.
 
 ### Storage and limits
 
-- Originals are stored verbatim on the uploads volume, keyed by upload id. `raw_data` is
+- Originals are stored verbatim on the uploads volume, keyed by upload id: `<id>.fit`, or
+  `<id>.strava.json` for an activity pulled from [Strava](strava.md#mapping). `raw_data` is
   only as good as the parser was at import time; the original is what makes
   `cli reimport` possible.
 - Reject oversized files (e.g. > 20 MB) and files without a FIT header before parsing.

@@ -31,3 +31,6 @@
 .gallery img { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover;
   border-radius: var(--radius); border: 1px solid var(--hairline); background: var(--surface); }
 .gallery figcaption { margin-top: 0.25rem; }
+
+/* "View on Strava" beside a split taken from Strava: kept on the segment's own line. */
+.split-source { margin-left: 0.25rem; }

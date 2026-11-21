@@ -92,9 +92,16 @@ That's the first release worth putting on a domain.
       recordings and confirmed by the owner
       ([races-and-results](features/races-and-results.md#prefilled-results)).
 
+## Phase 11 — Strava
+
+- [x] [strava](features/strava.md): log in with Strava (replaces the password once
+      linked), pull race-tagged activities into races through the import path, triathlon
+      chains, the tagline written back, consent before publishing Strava data, deletion on
+      disconnect or revocation, the verified webhook.
+
 ## After that
 
-[backlog](backlog.md), [strava](features/strava.md).
+[backlog](backlog.md).
 
 ## What v1 got right, and carries over
 

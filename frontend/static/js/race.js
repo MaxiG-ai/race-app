@@ -8,6 +8,7 @@ import {
   pace, paceValue, number, date as fmtDate, esc,
 } from "./format.js";
 import { lineChart, token } from "./charts.js";
+import { viewOnStrava } from "./strava.js";
 
 const main = /** @type {HTMLElement} */ (document.getElementById("main"));
 const id = Number(location.pathname.split("/").pop());
@@ -151,8 +152,10 @@ function renderSplits() {
       ? ` <span class="marker">calculated</span>` : "";
     const recordedMark = rec?.is_derived
       ? ` <span class="marker">derived from the gap</span>` : "";
+    // Strava's terms: anything shown from Strava links back to its activity.
+    const strava = viewOnStrava(rec?.strava_url);
     return `<tr>
-      <td>${esc(SEGMENT_LABELS[seg])}</td>
+      <td>${esc(SEGMENT_LABELS[seg])}${strava ? ` <span class="split-source">${strava}</span>` : ""}</td>
       <td class="num tnum">${esc(duration(officialTime))}${officialMark}</td>
       <td class="num tnum">${esc(duration(recordedTime))}${recordedMark}</td>
       <td class="num tnum">${esc(delta(d))}</td>
@@ -432,6 +435,7 @@ function renderRecordings() {
       <ul class="recordings-list">
         ${list.map((rec) => `<li>
           <span>${esc(rec.device_key ?? `Recording ${rec.id}`)}</span>
+          ${viewOnStrava(rec.strava_url)}
           ${rec.is_primary ? `<span class="badge">primary</span>`
             : `<button type="button" class="button" data-activity-id="${rec.id}">Make primary</button>`}
         </li>`).join("")}

@@ -9,7 +9,13 @@ from tests.conftest import PASSWORD
 from tests.factories import make_race
 
 WRITE_METHODS = {"post", "put", "patch", "delete"}
-ANYONE = {("post", "/api/auth/login")}
+# Routes anyone may call. The Strava webhook is Strava's, and verifies every event with
+# the API before acting on it (test_strava.py).
+ANYONE = {
+    ("post", "/api/auth/login"),
+    ("post", "/api/strava/webhook"),
+    ("get", "/api/strava/webhook"),
+}
 
 
 def _routes(methods):
@@ -33,6 +39,7 @@ def _routes(methods):
 WRITE_ROUTES = sorted(_routes(WRITE_METHODS))
 READ_ROUTES = sorted(r for r in _routes({"get"}) if r[1] != "/api/auth/me")
 OWNER_ONLY_READS = {
+    "/api/strava",
     "/api/gear",
     "/api/gear/unknown-devices",
     "/api/gear/last-used-shoes",
@@ -200,7 +207,11 @@ def test_publishing_sets_published_at_once(owner, db):
 
 
 def test_login_logout(owner):
-    assert owner.get("/api/auth/me").json() == {"owner": True, "site_mode": "private"}
+    assert owner.get("/api/auth/me").json() == {
+        "owner": True,
+        "site_mode": "private",
+        "login": "password",
+    }
     cookie = owner.cookies.get("race_session")
     assert cookie and len(cookie) >= 40
     assert owner.post("/api/auth/logout").status_code == 204

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import LapSplit, Race, RecordedActivity, Upload
-from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadStatus
+from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadSource, UploadStatus
 from app.services import classify, gear, results, weather
 from app.services.fit_import import FitParseError, ParsedFile, ParsedSession, parse_fit
 
@@ -170,7 +170,7 @@ def assign(db: Session, race: Race, given: dict[int, Segment]) -> None:
         segment = given[u.id]
         if segment not in race.segments():
             raise GroupingError(f"A {type_label(race.race_type)} has no {segment} leg.")
-        parsed = parse_fit(read_original(u))
+        parsed = parse_upload(u)
         check_same_race(race, parsed)
         first = not _has_recordings(race)
         add_recordings(db, race, u, parsed, segment)
@@ -231,27 +231,45 @@ class Outcome:
 
 @dataclass
 class Received:
-    """A file that passed the checks and parsed; nothing is written yet."""
+    """A file that passed the checks and parsed; nothing is written yet. A Strava activity
+    arrives the same way: `data` is the JSON Strava returned, kept as its original."""
 
     filename: str | None
     data: bytes
-    content_hash: str
+    content_hash: str | None
     parsed: ParsedFile
     upload: Upload | None  # a row to reuse: an earlier failed copy, or a leftover
+    source: UploadSource = UploadSource.FIT_UPLOAD
+    external_id: str | None = None  # the Strava activity id
 
 
 def _is_fit(data: bytes) -> bool:
     return len(data) >= 12 and data[8:12] == b".FIT"
 
 
-def _stored_path(upload_id: int) -> Path:
-    return get_settings().upload_dir / f"{upload_id}.fit"
+def _stored_path(upload_id: int, source: UploadSource = UploadSource.FIT_UPLOAD) -> Path:
+    suffix = "strava.json" if source is UploadSource.STRAVA else "fit"
+    return get_settings().upload_dir / f"{upload_id}.{suffix}"
 
 
 def read_original(upload: Upload) -> bytes:
     if not upload.stored_path or not Path(upload.stored_path).exists():
         raise FitParseError(f"The original file of upload {upload.id} is missing.")
     return Path(upload.stored_path).read_bytes()
+
+
+def parse_upload(upload: Upload) -> ParsedFile:
+    """Parse a stored original with the current code: a FIT file, or the JSON a Strava
+    pull stored (docs/features/strava.md#mapping)."""
+    data = read_original(upload)
+    if upload.source is UploadSource.STRAVA:
+        from app.services import strava_map  # imported late: strava_map imports fit_import
+
+        try:
+            return strava_map.from_original(data)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise FitParseError(f"The stored Strava activity can't be read: {exc}") from exc
+    return parse_fit(data)
 
 
 def summary(parsed: ParsedFile) -> dict:
@@ -326,14 +344,16 @@ def _store(db: Session, received: Received) -> Upload:
     upload = received.upload
     if upload is None:
         upload = Upload(
+            source=received.source,
             filename=received.filename,
             content_hash=received.content_hash,
+            external_id=received.external_id,
             status=UploadStatus.PARSED,
         )
         db.add(upload)
         db.flush()
     if not upload.stored_path or not Path(upload.stored_path).exists():
-        path = _stored_path(upload.id)
+        path = _stored_path(upload.id, upload.source)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(received.data)
         upload.stored_path = str(path)
@@ -400,19 +420,29 @@ def receive(
 ) -> tuple[Race | None, list[Outcome]]:
     """POST /api/races/import (no `race`: one is made from the files) and
     POST /api/races/{id}/uploads. Outcomes come back in the order the files were sent."""
-    outcomes: dict[int, Outcome] = {}
-    received: list[tuple[int, Received]] = []
+    checked: list[Received | Outcome] = []
     seen: dict[str, str | None] = {}
-    for i, (filename, data) in enumerate(files):
+    for filename, data in files:
         result = check(db, race, filename, data)
         if isinstance(result, Received) and result.content_hash in seen:
             first = seen[result.content_hash] or "another file"
             result = Outcome(filename, "duplicate", f"The same file as {first}, sent twice.")
-        if isinstance(result, Outcome):
-            outcomes[i] = result
-            continue
-        seen[result.content_hash] = filename
-        received.append((i, result))
+        if isinstance(result, Received):
+            seen[result.content_hash] = filename  # type: ignore[index]
+        checked.append(result)
+    return place(db, checked, race, race_type)
+
+
+def place(
+    db: Session,
+    checked: list[Received | Outcome],
+    race: Race | None = None,
+    race_type: RaceType | None = None,
+) -> tuple[Race | None, list[Outcome]]:
+    """Checked files onto `race`, or onto a new race made from them. Shared by dropped
+    files and Strava pulls, so both fill legs exactly the same way."""
+    outcomes: dict[int, Outcome] = {i: r for i, r in enumerate(checked) if isinstance(r, Outcome)}
+    received = [(i, r) for i, r in enumerate(checked) if isinstance(r, Received)]
 
     created = race is None
     if race is None:
@@ -473,6 +503,7 @@ def add_recordings(
             activity = RecordedActivity(upload_id=upload.id)
             race.activities.append(activity)
         _fill(activity, Segment(seg), session, parsed)
+        activity.source = upload.source
         db.flush()
         gear.detect(db, activity)
         touched.add(Segment(seg))
@@ -551,7 +582,7 @@ def refresh(db: Session, race: Race, *, with_weather: bool = False) -> None:
 
 def reimport(db: Session, upload: Upload) -> str:
     """Re-parse a stored original with the current parser (`cli reimport`)."""
-    parsed = parse_fit(read_original(upload))
+    parsed = parse_upload(upload)
     apply_parse(upload, parsed)
     if upload.status is UploadStatus.FAILED:
         upload.status = UploadStatus.PARSED

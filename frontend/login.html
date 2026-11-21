@@ -8,11 +8,17 @@
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/base.css">
   <link rel="stylesheet" href="/static/css/login.css">
+  <link rel="stylesheet" href="/static/css/strava.css">
   <script type="module" src="/static/js/login.js"></script>
 </head>
 <body>
   <main class="page" id="main">
     <h1>Log in</h1>
+    <p class="error" id="strava-message" role="alert"></p>
+    <div id="strava-login" class="hidden">
+      <p class="muted">This site's owner logs in with their Strava account.</p>
+      <p id="strava-login-button"></p>
+    </div>
     <form id="login-form" novalidate>
       <div class="field">
         <label for="username">Username</label>

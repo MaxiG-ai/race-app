@@ -7,6 +7,7 @@ from app.models.gear import ActivityGear, Gear, GearDevice
 from app.models.imports import LapSplit, RecordedActivity, Upload
 from app.models.photos import RacePhoto
 from app.models.race import OfficialResult, Race
+from app.models.strava import StravaAccount, StravaActivity
 
 __all__ = [
     "ActivityGear",
@@ -22,5 +23,7 @@ __all__ = [
     "RacePhoto",
     "RecordedActivity",
     "SiteSettings",
+    "StravaAccount",
+    "StravaActivity",
     "Upload",
 ]

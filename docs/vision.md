@@ -29,7 +29,8 @@ course map and pacing, and records weather, fueling and gear.
   like Leaflet for maps or Chart.js for charts. The backend may use a standard framework
   stack. See [architecture](architecture.md#dependency-policy).
 - **FIT files are the source of truth** for recorded data; official results are typed in
-  by hand. Strava is secondary and deferred.
+  by hand. Strava is a secondary source: the owner logs in with it and pulls races from
+  it ([strava](features/strava.md)), and a FIT recording of the same leg stays primary.
 - **Partial data is normal.** A race with just a name and a date is a valid race.
   Unknown values show as "—", never as zero.
 - **Publishable.** The code, the docs and the test fixtures must be safe to publish. No
@@ -72,3 +73,4 @@ Decisions for the rewrite, newest last. Feature files hold the detail.
 | Publishing | repository goes public after the rewrite; its history (with the v1 recordings) is kept as is | repo must stay private |
 | Classification | inferred from measured distances; manual override kept alongside | same |
 | Fueling, gear, weather, comparison | kept | same |
+| Strava | login provider and secondary source; Strava data public only with the owner's consent | — |

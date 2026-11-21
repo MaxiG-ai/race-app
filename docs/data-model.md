@@ -5,6 +5,9 @@ they relate. Units and nullability conventions are in [architecture](architectur
 
 ```
 owner (1 row) ── session
+  └── strava_account (0..1 row, the owner's athlete and tokens)
+
+strava_activity (race activities a pull handled) ──► race (nullable)
 
 site_settings (1 row)
 
@@ -35,6 +38,7 @@ race ────────────────┤
 | `race_fueling` | [fueling](features/fueling.md#data) | |
 | `gear`, `gear_device`, `activity_gear` | [gear](features/gear.md#data) | |
 | `race_photo` | [photos](features/photos.md#data) | files on the uploads volume |
+| `strava_account`, `strava_activity` | [strava](features/strava.md#data) | tokens never leave the server |
 
 Weather columns live on `race` but are written by [weather](features/weather.md).
 

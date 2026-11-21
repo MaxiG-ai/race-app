@@ -56,6 +56,30 @@ Twelve-factor: everything comes from env vars, and `.env.example` documents each
 | `MAX_UPLOAD_BYTES` | per-file upload limit, default 20 MB |
 | `OPEN_METEO_BASE_URL` | weather API base |
 | `DOMAIN`, `ACME_EMAIL` | public mode only |
+| `PUBLIC_BASE_URL` | the site's address, e.g. `https://race.example.com`; the Strava callback and the tagline link use it |
+| `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` | from your Strava API application; both set turns [Strava](../features/strava.md) on |
+| `STRAVA_OWNER_ATHLETE_ID` | optional: this athlete may claim a fresh instance by logging in with Strava |
+| `STRAVA_WEBHOOK_VERIFY_TOKEN` | optional: any random string; enables the webhook |
+| `STRAVA_API_BASE` | default `https://www.strava.com/api/v3` |
+
+### Strava
+
+1. Create an API application at <https://www.strava.com/settings/api>. Set the
+   **Authorization Callback Domain** to your domain (bare, no scheme), or `localhost` for
+   a local run. The callback is `<PUBLIC_BASE_URL>/auth/strava/callback`.
+2. Put its client id and secret in `.env`, plus `PUBLIC_BASE_URL`. A new application is in
+   "single player mode" (only you can connect), which is all a one-owner instance needs.
+3. Log in with the password, open **Site → Strava → Connect with Strava**. From then on
+   the site logs in with Strava only. On a fresh instance, set `STRAVA_OWNER_ATHLETE_ID`
+   instead and log in with Strava straight away.
+4. Public instances: set `STRAVA_WEBHOOK_VERIFY_TOKEN` and run
+   `docker compose exec app uv run python -m app.cli strava-subscribe
+   https://<domain>/api/strava/webhook` once, so revoking access on strava.com deletes
+   the Strava data promptly.
+
+Strava's terms of 2026 require a Strava subscription for API access and allow showing
+Strava data to visitors only with the athlete's consent, which the site asks for when a
+race with Strava data is first published.
 
 No CORS settings are needed: the frontend and the API share an origin.
 
