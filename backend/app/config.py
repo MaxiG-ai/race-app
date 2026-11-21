@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     site_mode: Literal["private", "public"] = "private"
+    # TEMPORARY: treat every visitor as the owner. Only for deployments where something else
+    # (e.g. a platform proxy) already authenticates visitors. Remove or set false to restore login.
+    disable_login: bool = False
     # DATABASE_URL wins when set. Otherwise it is built from the same POSTGRES_* variables
     # the db container reads, so the password lives only in .env.
     database_url: str = ""

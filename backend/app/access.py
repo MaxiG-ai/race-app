@@ -99,6 +99,8 @@ def end_session(db: Session, request: Request, response: Response) -> None:
 
 
 def get_viewer(request: Request, response: Response, db: DB) -> Viewer:
+    if get_settings().disable_login:  # TEMPORARY, see config.py
+        return Viewer(is_owner=True)
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return Viewer(is_owner=False)
