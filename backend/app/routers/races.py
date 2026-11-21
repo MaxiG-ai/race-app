@@ -9,7 +9,14 @@ from sqlalchemy.orm import object_session
 
 from app.access import DB, CurrentViewer, Viewer, owner_router, reader_router, visible_race
 from app.models import LapSplit, OfficialResult, Race, RecordedActivity, Upload
-from app.models.enums import SEGMENTS, ClassificationSource, RaceType, Segment, race_segments
+from app.models.enums import (
+    SEGMENTS,
+    ClassificationSource,
+    RaceType,
+    Segment,
+    UploadSource,
+    race_segments,
+)
 from app.routers.photos import photo_out
 from app.schemas.races import (
     CategoryRef,
@@ -29,7 +36,7 @@ from app.schemas.races import (
     TrackSegment,
     Weather,
 )
-from app.services import classify, gear, geo, imports, markdown, photos, results
+from app.services import classify, gear, geo, imports, markdown, photos, results, strava, strava_api
 
 read = reader_router()
 write = owner_router()
@@ -66,6 +73,7 @@ def _segment_fields(a: RecordedActivity) -> dict:
         "bounds": _bounds(a),
         "time_in_zone": a.time_in_zone,
         "gear": [GearName.model_validate(link.gear) for link in a.gear_links],
+        "strava_url": strava.activity_url(a),
     }
 
 
@@ -139,10 +147,17 @@ def detail(race: Race, viewer: Viewer) -> RaceDetailPublic:
         marked_complete=race.marked_complete,
         missing_segments=race.missing_segments(),
         is_incomplete=race.is_incomplete,
-        uploads=[RaceUpload.model_validate(u) for u in race_uploads(race)],
+        uploads=[upload_out(u) for u in race_uploads(race)],
         recordings=recordings,
         completeness=results.completeness(race),
     )
+
+
+def upload_out(upload: Upload) -> RaceUpload:
+    out = RaceUpload.model_validate(upload)
+    if upload.source is UploadSource.STRAVA and upload.external_id:
+        out.strava_url = strava_api.ACTIVITY_URL.format(id=upload.external_id)
+    return out
 
 
 def race_uploads(race: Race) -> list[Upload]:

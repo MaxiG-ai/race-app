@@ -61,7 +61,8 @@ def _clean(monkeypatch):
         db.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
         db.execute(
             text(
-                "UPDATE site_settings SET site_title='Race history', athlete_name=NULL, about=NULL"
+                "UPDATE site_settings SET site_title='Race history', athlete_name=NULL, "
+                "about=NULL, strava_tagline=true, strava_public_consent_at=NULL"
             )
         )
         db.commit()

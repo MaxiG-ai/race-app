@@ -1,3 +1,4 @@
 /* Login page: a small centred form, no header. */
 
 #login-form { max-width: 20rem; }
+#strava-message:empty { display: none; }

@@ -14,6 +14,7 @@ from app.models.enums import (
     Segment,
     Sport,
     UploadKind,
+    UploadSource,
     UploadStatus,
 )
 from app.schemas.common import Model, Patch, Seconds
@@ -95,6 +96,7 @@ class SegmentPublic(Model):
     bounds: list[float] | None  # [n, s, e, w]
     time_in_zone: TimeInZone | None  # only from devices that record it
     gear: list[GearName]
+    strava_url: str | None  # "View on Strava", for a recording pulled from Strava
 
 
 class Recording(SegmentPublic):
@@ -150,7 +152,9 @@ class RaceUpload(Model):
     """A file on the race page. Owner only."""
 
     id: int
-    filename: str | None
+    source: UploadSource  # fit_upload | strava
+    filename: str | None  # the activity's name for a Strava upload
+    strava_url: str | None = None  # "View on Strava" for an activity pulled from Strava
     status: UploadStatus  # parsed: waiting for the owner to pick its leg
     kind: UploadKind | None
     detected_sport: Sport | None

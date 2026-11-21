@@ -20,6 +20,11 @@
   --focus: #1C2321;
   --danger: #B4472A;
 
+  /* Strava's brand orange, for its buttons and "View on Strava" links only (its brand
+     guidelines fix the colour, so it is the same in both themes). */
+  --strava-orange: #FC5200;
+  --on-strava: #FFFFFF;
+
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --text-sm: 0.875rem;
   --text-xs: 0.75rem;
@@ -48,5 +53,8 @@
 
     --focus: #E7E5DF;
     --danger: #E07A62;
+
+    --strava-orange: #FC5200;
+    --on-strava: #FFFFFF;
   }
 }

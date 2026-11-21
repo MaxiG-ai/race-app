@@ -13,6 +13,9 @@ class LoginIn(BaseModel):
 class Me(BaseModel):
     owner: bool
     site_mode: Literal["private", "public"]
+    # How the owner logs in: the password form, or "Log in with Strava" once the owner's
+    # Strava athlete is linked (docs/features/strava.md#login).
+    login: Literal["password", "strava"]
 
 
 class SiteOut(Model):
@@ -29,3 +32,6 @@ class SitePatch(Patch):
 
 class VisibilityIn(BaseModel):
     is_public: bool
+    # The owner's one-time consent to show data that came from Strava to visitors
+    # (docs/features/strava.md#publishing). Only read when it is needed.
+    strava_consent: bool = False

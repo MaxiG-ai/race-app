@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import LapSplit, Race, RecordedActivity, Upload
-from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadStatus
+from app.models.enums import RaceType, Segment, Sport, UploadKind, UploadSource, UploadStatus
 from app.services import classify, gear, results, weather
 from app.services.fit_import import FitParseError, ParsedFile, ParsedSession, parse_fit
 
@@ -94,9 +94,12 @@ def check_same_race(race: Race, parsed: ParsedFile) -> None:
 
 
 def reconcile_primary(db: Session, race: Race, segment: Segment) -> None:
-    """Keep exactly one primary per segment; default to the richest recording (power
-    beats none, a measurement beats a derived transition, then the longer duration).
-    An existing real primary is kept, so attaching a second device never steals it."""
+    """Keep exactly one primary per segment; default to the richest recording (a FIT
+    recording beats one from Strava, power beats none, a measurement beats a derived
+    transition, then the longer duration). An existing real primary is kept, so attaching
+    a second device never steals it, and the owner's own pick survives a re-import. A FIT
+    file *newly added* over a Strava primary takes over in `add_recordings`
+    (docs/features/strava.md: the FIT recording is primary, whichever came first)."""
     candidates = [a for a in race.activities if a.segment == segment]
     if not candidates:
         return
@@ -104,7 +107,13 @@ def reconcile_primary(db: Session, race: Race, segment: Segment) -> None:
     if len(current) == 1 and not current[0].is_derived:
         return
     winner = max(
-        candidates, key=lambda a: (a.avg_power is not None, not a.is_derived, a.elapsed_time)
+        candidates,
+        key=lambda a: (
+            a.source is not UploadSource.STRAVA,
+            a.avg_power is not None,
+            not a.is_derived,
+            a.elapsed_time,
+        ),
     )
     set_primary(db, winner)
 
@@ -170,7 +179,7 @@ def assign(db: Session, race: Race, given: dict[int, Segment]) -> None:
         segment = given[u.id]
         if segment not in race.segments():
             raise GroupingError(f"A {type_label(race.race_type)} has no {segment} leg.")
-        parsed = parse_fit(read_original(u))
+        parsed = parse_upload(u)
         check_same_race(race, parsed)
         first = not _has_recordings(race)
         add_recordings(db, race, u, parsed, segment)
@@ -231,27 +240,45 @@ class Outcome:
 
 @dataclass
 class Received:
-    """A file that passed the checks and parsed; nothing is written yet."""
+    """A file that passed the checks and parsed; nothing is written yet. A Strava activity
+    arrives the same way: `data` is the JSON Strava returned, kept as its original."""
 
     filename: str | None
     data: bytes
-    content_hash: str
+    content_hash: str | None
     parsed: ParsedFile
     upload: Upload | None  # a row to reuse: an earlier failed copy, or a leftover
+    source: UploadSource = UploadSource.FIT_UPLOAD
+    external_id: str | None = None  # the Strava activity id
 
 
 def _is_fit(data: bytes) -> bool:
     return len(data) >= 12 and data[8:12] == b".FIT"
 
 
-def _stored_path(upload_id: int) -> Path:
-    return get_settings().upload_dir / f"{upload_id}.fit"
+def _stored_path(upload_id: int, source: UploadSource = UploadSource.FIT_UPLOAD) -> Path:
+    suffix = "strava.json" if source is UploadSource.STRAVA else "fit"
+    return get_settings().upload_dir / f"{upload_id}.{suffix}"
 
 
 def read_original(upload: Upload) -> bytes:
     if not upload.stored_path or not Path(upload.stored_path).exists():
         raise FitParseError(f"The original file of upload {upload.id} is missing.")
     return Path(upload.stored_path).read_bytes()
+
+
+def parse_upload(upload: Upload) -> ParsedFile:
+    """Parse a stored original with the current code: a FIT file, or the JSON a Strava
+    pull stored (docs/features/strava.md#mapping)."""
+    data = read_original(upload)
+    if upload.source is UploadSource.STRAVA:
+        from app.services import strava_map  # imported late: strava_map imports fit_import
+
+        try:
+            return strava_map.from_original(data)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise FitParseError(f"The stored Strava activity can't be read: {exc}") from exc
+    return parse_fit(data)
 
 
 def summary(parsed: ParsedFile) -> dict:
@@ -326,14 +353,16 @@ def _store(db: Session, received: Received) -> Upload:
     upload = received.upload
     if upload is None:
         upload = Upload(
+            source=received.source,
             filename=received.filename,
             content_hash=received.content_hash,
+            external_id=received.external_id,
             status=UploadStatus.PARSED,
         )
         db.add(upload)
         db.flush()
     if not upload.stored_path or not Path(upload.stored_path).exists():
-        path = _stored_path(upload.id)
+        path = _stored_path(upload.id, upload.source)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(received.data)
         upload.stored_path = str(path)
@@ -345,8 +374,10 @@ def _describe(race: Race, upload: Upload, parsed: ParsedFile, segment: Segment |
         legs = ", ".join(_SEGMENT_LABELS[s.segment] for s in parsed.sessions if s.segment)
         return f"Added: {legs}."
     others = [a for a in race.activities if a.segment == segment and a.upload_id != upload.id]
-    if others:
+    if others and any(a.is_primary for a in others):
         return f"Added as a second {segment} recording. The first one stays primary."
+    if others:
+        return f"Added as the primary {segment} recording. The one from Strava stays as a second."
     return f"Added as the {segment} leg."
 
 
@@ -400,19 +431,29 @@ def receive(
 ) -> tuple[Race | None, list[Outcome]]:
     """POST /api/races/import (no `race`: one is made from the files) and
     POST /api/races/{id}/uploads. Outcomes come back in the order the files were sent."""
-    outcomes: dict[int, Outcome] = {}
-    received: list[tuple[int, Received]] = []
+    checked: list[Received | Outcome] = []
     seen: dict[str, str | None] = {}
-    for i, (filename, data) in enumerate(files):
+    for filename, data in files:
         result = check(db, race, filename, data)
         if isinstance(result, Received) and result.content_hash in seen:
             first = seen[result.content_hash] or "another file"
             result = Outcome(filename, "duplicate", f"The same file as {first}, sent twice.")
-        if isinstance(result, Outcome):
-            outcomes[i] = result
-            continue
-        seen[result.content_hash] = filename
-        received.append((i, result))
+        if isinstance(result, Received):
+            seen[result.content_hash] = filename  # type: ignore[index]
+        checked.append(result)
+    return place(db, checked, race, race_type)
+
+
+def place(
+    db: Session,
+    checked: list[Received | Outcome],
+    race: Race | None = None,
+    race_type: RaceType | None = None,
+) -> tuple[Race | None, list[Outcome]]:
+    """Checked files onto `race`, or onto a new race made from them. Shared by dropped
+    files and Strava pulls, so both fill legs exactly the same way."""
+    outcomes: dict[int, Outcome] = {i: r for i, r in enumerate(checked) if isinstance(r, Outcome)}
+    received = [(i, r) for i, r in enumerate(checked) if isinstance(r, Received)]
 
     created = race is None
     if race is None:
@@ -464,6 +505,7 @@ def add_recordings(
         )
     }
     touched = set()
+    added: list[RecordedActivity] = []
     for session in parsed.sessions:
         seg = session.segment or segment
         if seg is None:
@@ -472,12 +514,20 @@ def add_recordings(
         if activity is None:
             activity = RecordedActivity(upload_id=upload.id)
             race.activities.append(activity)
+            added.append(activity)
         _fill(activity, Segment(seg), session, parsed)
+        activity.source = upload.source
         db.flush()
         gear.detect(db, activity)
         touched.add(Segment(seg))
     for seg in touched:
         reconcile_primary(db, race, seg)
+    if upload.source is not UploadSource.STRAVA:
+        primaries = race.primary_activities()
+        for activity in added:
+            current = primaries.get(activity.segment)
+            if current is not None and current.source is UploadSource.STRAVA:
+                set_primary(db, activity)  # a new FIT file beats a Strava primary
 
 
 def _fill(activity: RecordedActivity, segment: Segment, s: ParsedSession, f: ParsedFile) -> None:
@@ -551,7 +601,7 @@ def refresh(db: Session, race: Race, *, with_weather: bool = False) -> None:
 
 def reimport(db: Session, upload: Upload) -> str:
     """Re-parse a stored original with the current parser (`cli reimport`)."""
-    parsed = parse_fit(read_original(upload))
+    parsed = parse_upload(upload)
     apply_parse(upload, parsed)
     if upload.status is UploadStatus.FAILED:
         upload.status = UploadStatus.PARSED

@@ -90,6 +90,16 @@ export function date(/** @type {string|null|undefined} */ iso) {
   });
 }
 
+/** A UTC timestamp → "21 Jun 2026, 14:05" in the viewer's own time zone. */
+export function dateTime(/** @type {string|null|undefined} */ iso) {
+  if (!iso) return DASH;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return DASH;
+  return d.toLocaleString("en-GB", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 /** Parse "1:02:03", "62:03" or "3723" into seconds; "" → null; invalid → NaN. */
 export function parseDuration(/** @type {string} */ text) {
   const t = text.trim();

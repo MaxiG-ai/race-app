@@ -28,7 +28,7 @@ onto the [roadmap](roadmap.md).
 - **Gear components** (gear). Chains, cassettes and tyres as sub-items with their own mileage and
   service intervals. Needs a parent/child tree and a swap history.
 - **Other category sets** (classification). World Triathlon, Ironman naming.
-- **Strava** ([strava](features/strava.md)).
+- **Strava push-driven pulls and swim-only races** ([strava](features/strava.md#open-questions)).
 
 ## Platform
 

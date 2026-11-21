@@ -26,7 +26,9 @@
 /**
  * @typedef {Object} RaceUpload  a file on the race page (owner only)
  * @property {number} id
- * @property {string|null} filename
+ * @property {"fit_upload"|"strava"} source
+ * @property {string|null} filename  the activity's name for a Strava upload
+ * @property {string|null} [strava_url]  "View on Strava", for an activity pulled from Strava
  * @property {"parsed"|"grouped"|"failed"} status  parsed: waiting for its leg to be picked
  * @property {"multisport"|"single_sport"|null} kind
  * @property {"swim"|"bike"|"run"|"other"|null} detected_sport
@@ -55,6 +57,7 @@
  * @property {number[]|null} bounds  [n, s, e, w]
  * @property {{hr: ZoneSet|null, power: ZoneSet|null}|null} time_in_zone  device-recorded only
  * @property {{id: number, name: string, kind: string}[]} gear
+ * @property {string|null} strava_url  "View on Strava", for a recording pulled from Strava
  */
 
 /**
@@ -172,9 +175,14 @@
  * @property {{segment: Segment, a: {carbs_g: number|null, g_per_h: number|null,
  *   products: {name: string, quantity: number|null}[]}|null, b: any,
  *   carbs_delta_g: number|null, only_a: string[], only_b: string[]}[]} fueling
+ * @property {{a: Partial<Record<Segment, string>>, b: Partial<Record<Segment, string>>}} strava_urls
+ *   "View on Strava" per leg recorded from Strava
  */
 
-/** @typedef {{owner: boolean, site_mode: "private"|"public"}} Me */
+/**
+ * @typedef {{owner: boolean, site_mode: "private"|"public", login: "password"|"strava"}} Me
+ *   login "strava": the password form is off; the owner logs in with Strava only
+ */
 /** @typedef {{site_title: string, athlete_name: string|null, about: string|null}} Site */
 
 export {};
@@ -207,4 +215,41 @@ export {};
  * @property {boolean} is_cover
  * @property {string} thumb_url
  * @property {string} full_url
+ */
+
+/**
+ * @typedef {Object} StravaStatus  GET /api/strava (owner only; no token is ever in it)
+ * @property {boolean} enabled  STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET are set
+ * @property {boolean} connected
+ * @property {string|null} athlete_id
+ * @property {string|null} athlete_name
+ * @property {string[]} scope  what the athlete granted
+ * @property {boolean} can_pull
+ * @property {boolean} can_write  the tagline can be written
+ * @property {string|null} last_pull_at
+ * @property {boolean} tagline  the site setting
+ * @property {string|null} public_consent_at
+ * @property {[number, number]|null} rate_usage  [15-minute, daily], from Strava's last answer
+ * @property {[number, number]|null} rate_limit
+ * @property {boolean} webhook
+ */
+
+/**
+ * @typedef {Object} ImportOutcome  what became of one file or Strava activity
+ * @property {string|null} filename
+ * @property {"attached"|"needs_segment"|"duplicate"|"failed"|"skipped"} result
+ * @property {string} message
+ * @property {number|null} upload_id
+ * @property {number|null} race_id
+ */
+
+/**
+ * @typedef {Object} PullOut  POST /api/strava/pull
+ * @property {{race_id: number, name: string, created: boolean, outcomes: ImportOutcome[]}[]} races
+ * @property {{activity_id: string, name: string|null, message: string}[]} skipped
+ * @property {number} taglines  written to Strava by this pull
+ * @property {string[]} tagline_errors
+ * @property {number} scanned  activities looked at
+ * @property {boolean} complete  false: stopped early (rate limit); the message says so
+ * @property {string} message
  */

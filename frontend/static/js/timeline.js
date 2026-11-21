@@ -4,6 +4,7 @@
 import { api } from "./api.js";
 import { header, segmentBar, fail } from "./layout.js";
 import { date, duration, distance, elevation, esc, RACE_TYPE_LABELS } from "./format.js";
+import { pullPanel } from "./strava.js";
 
 /** @typedef {import("./types.js").RaceListItem} RaceListItem */
 
@@ -22,6 +23,7 @@ async function main() {
   main.innerHTML = `
     <p class="muted" id="about"></p>
     <p class="stat-strip muted small" id="stats"></p>
+    <div id="strava-pull"></div>
     <div id="list"></div>
     <p id="more-wrap" class="hidden"><button type="button" id="more">Show more</button></p>
   `;
@@ -32,12 +34,16 @@ async function main() {
     aboutEl.remove();
   }
 
-  try {
-    const stats = await api("/stats/summary");
-    document.getElementById("stats").innerHTML = statStrip(stats);
-  } catch (err) {
-    document.getElementById("stats")?.remove();
+  async function loadStats() {
+    const statsEl = document.getElementById("stats");
+    if (!statsEl) return;
+    try {
+      statsEl.innerHTML = statStrip(await api("/stats/summary"));
+    } catch (err) {
+      statsEl.remove();
+    }
   }
+  await loadStats();
 
   const listEl = /** @type {HTMLElement} */ (document.getElementById("list"));
   const moreWrap = /** @type {HTMLElement} */ (document.getElementById("more-wrap"));
@@ -73,8 +79,40 @@ async function main() {
     listEl.innerHTML = `<div class="timeline">${shown.map((r) => card(r, who)).join("")}</div>`;
   }
 
+  /** From the top again: a Strava pull may have added races anywhere in the list. */
+  async function reload() {
+    offset = 0;
+    shown = [];
+    await loadMore();
+    loadStats();
+  }
+
   moreBtn.addEventListener("click", loadMore);
   await loadMore();
+  if (who.owner) stravaPull(reload);
+}
+
+/**
+ * The owner's "Pull new races from Strava", once Strava is connected. Anything else
+ * (not set up, not connected, an error) shows nothing.
+ * @param {() => Promise<void>} reload
+ */
+async function stravaPull(reload) {
+  const el = /** @type {HTMLElement} */ (document.getElementById("strava-pull"));
+  /** @type {import("./types.js").StravaStatus} */
+  let status;
+  try {
+    status = await api("/strava");
+  } catch {
+    return;
+  }
+  if (!status.enabled || !status.connected || !status.can_pull) return;
+  pullPanel(el, {
+    compact: true,
+    onDone: (out) => {
+      if (out.races.length) reload();
+    },
+  });
 }
 
 /** @param {{race_count: number, distance_m: number, distance_race_count: number,

@@ -6,8 +6,9 @@
 // return the full owner race detail and only the affected sections are re-rendered so
 // focus isn't lost while typing elsewhere.
 
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 import { header, fail } from "./layout.js";
+import { viewOnStrava } from "./strava.js";
 import {
   duration, distance, number, esc, parseDuration, DASH, SEGMENT_LABELS,
   RACE_TYPES, RACE_TYPE_LABELS, raceSegments,
@@ -352,8 +353,12 @@ function uploadRow(u) {
         + (r.is_primary ? "" : ` <span class="marker">not primary</span>`))
       .join(", ") || DASH;
   }
+  const name = u.source === "strava"
+    ? `<span class="strava-source">${esc(u.filename ?? "Strava activity")}
+        <span class="badge">from Strava</span>${viewOnStrava(u.strava_url)}</span>`
+    : esc(u.filename ?? DASH);
   return `<tr>
-    <td>${esc(u.filename ?? DASH)}</td>
+    <td>${name}</td>
     <td>${legs}</td>
     <td class="tnum">${esc(start)}</td>
     <td class="num tnum">${esc(distance(u.detected_distance_m))}</td>
@@ -714,15 +719,40 @@ function wireVisibility() {
     const target = /** @type {HTMLInputElement} */ (e.target);
     if (target.id !== "v-public") return;
     const statusEl = document.getElementById("v-status");
+    const isPublic = target.checked;
+    setStatus(statusEl, "Saving…", false);
     try {
-      await api(`/races/${raceId}/visibility`, { method: "PATCH", body: { is_public: target.checked } });
-      race.is_public = target.checked;
+      await setVisibility(isPublic);
+      race.is_public = isPublic;
       setStatus(statusEl, "Saved", false);
     } catch (err) {
-      target.checked = !target.checked;
+      target.checked = !isPublic;
       setStatus(statusEl, err instanceof Error ? err.message : String(err), true);
     }
   });
+}
+
+/**
+ * PATCH the race's visibility. Publishing a race with Strava data needs the owner's
+ * consent once (Strava's API terms): the server answers 409 until it has it, so ask, and
+ * send it again with the consent.
+ * @param {boolean} isPublic
+ */
+async function setVisibility(isPublic) {
+  const path = `/races/${raceId}/visibility`;
+  try {
+    await api(path, { method: "PATCH", body: { is_public: isPublic } });
+  } catch (err) {
+    if (!(isPublic && err instanceof ApiError && err.status === 409)) throw err;
+    const agreed = confirm("This race has data from Strava.\n\n"
+      + "Strava's API terms only allow showing Strava data to the athlete it belongs to, "
+      + "unless they explicitly agree to show it to others. If you agree, your published "
+      + "races may show your Strava-sourced tracks, splits and heart rate to visitors.\n\n"
+      + "You're asked this once. You can withdraw it on the Site page.\n\n"
+      + "Show Strava data to visitors and make this race public?");
+    if (!agreed) throw new Error("Not published: the race has Strava data and you didn't agree to show it.");
+    await api(path, { method: "PATCH", body: { is_public: true, strava_consent: true } });
+  }
 }
 
 // --- category --------------------------------------------------------------------------
